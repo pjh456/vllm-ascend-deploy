@@ -1,0 +1,214 @@
+name: ${COMPOSE_PROJECT_NAME}
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "${LOG_MAX_SIZE:-100m}"
+    max-file: "${LOG_MAX_FILE:-3}"
+
+# 引擎公共部分：进程即 vLLM（PID 1），信号直传，无 supervisor
+x-engine: &engine
+  image: ${VLLM_IMAGE}
+  network_mode: host
+  restart: "no"
+  stop_grace_period: ${STOP_GRACE:-120s}
+  cap_add:
+    - IPC_LOCK
+  ulimits:
+    memlock: -1
+    nofile: 1048576
+  logging: *logging
+  volumes:
+    - ${STACK_DIR}:/opt/vllm:ro
+    - ${MODEL_ROOT}:${MODEL_ROOT}:ro
+    - ${CACHE_ROOT}:/root/.cache
+    - /usr/local/dcmi:/usr/local/dcmi
+    - /usr/local/Ascend/driver/tools/hccn_tool:/usr/local/Ascend/driver/tools/hccn_tool
+    - /usr/local/bin/npu-smi:/usr/local/bin/npu-smi
+    - /usr/local/Ascend/driver/lib64:/usr/local/Ascend/driver/lib64
+    - /usr/local/Ascend/driver/version.info:/usr/local/Ascend/driver/version.info
+    - /etc/ascend_install.info:/etc/ascend_install.info
+    - /etc/hccn.conf:/etc/hccn.conf
+    - mmc-shm:/dev/shm
+
+services:
+  # ---- KV 元数据基础设施 ----
+  kv-master:
+    image: ${VLLM_IMAGE}
+    network_mode: host
+    restart: unless-stopped
+    logging: *logging
+    volumes:
+      - ${STACK_DIR}:/opt/vllm:ro
+    command:
+      - mooncake_master
+      - --port
+      - "50088"
+      - --eviction_high_watermark_ratio
+      - "0.9"
+      - --eviction_ratio
+      - "0.1"
+      - --default_kv_lease_ttl
+      - "11000"
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import socket;socket.create_connection(('127.0.0.1',50088),2)\" || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+
+  kv-meta:
+    image: ${VLLM_IMAGE}
+    network_mode: host
+    restart: unless-stopped
+    logging: *logging
+    volumes:
+      - ${STACK_DIR}:/opt/vllm:ro
+    environment:
+      MMC_META_CONFIG_PATH: /opt/vllm/hosts/${HOST_ID}/mmc-meta.conf
+      MMC_LOCAL_CONFIG_PATH: /opt/vllm/hosts/${HOST_ID}/mmc-local.conf
+    command: ["python3", "-c", "from memcache_hybrid import MetaService; MetaService.main()"]
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import socket;socket.create_connection(('127.0.0.1',5000),2)\" || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+
+  # ---- 推理引擎 ----
+  prefill:
+    <<: *engine
+    entrypoint: ["/bin/bash", "/opt/vllm/engine/prefill.sh"]
+    depends_on:
+      kv-master:
+        condition: service_healthy
+      kv-meta:
+        condition: service_healthy
+    environment:
+      HOST_ID: ${HOST_ID}
+      BIND_IP: ${BIND_IP}
+      NIC: ${NIC}
+      MODEL: ${MODEL}
+      DRAFT: ${DRAFT:-}
+      SERVED_NAME: ${SERVED_NAME}
+      TP: ${TP}
+      ENABLE_EP: ${ENABLE_EP}
+      MAX_MODEL_LEN: ${MAX_MODEL_LEN}
+      MAX_NUM_SEQS: ${MAX_NUM_SEQS}
+      SPEC_TOKENS: ${SPEC_TOKENS}
+      SPEC_METHOD: ${SPEC_METHOD}
+      BLOCK_SIZE: ${BLOCK_SIZE}
+      PREFIX_RETENTION: ${PREFIX_RETENTION}
+      TOOL_PARSER: ${TOOL_PARSER}
+      REASONING_PARSER: ${REASONING_PARSER}
+      CHAT_TEMPLATE_KWARGS: ${CHAT_TEMPLATE_KWARGS}
+      MODEL_LOADER_CONFIG: ${MODEL_LOADER_CONFIG}
+      HCCL_BUFFSIZE: ${HCCL_BUFFSIZE}
+      P_PORT: ${P_PORT}
+      P_NPUS: ${P_NPUS}
+      P_GMU: ${P_GMU}
+      P_CHUNK: ${P_CHUNK}
+      P_CAPTURE_MODE: ${P_CAPTURE_MODE}
+      P_API_SERVERS: ${P_API_SERVERS}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:${P_PORT}/health >/dev/null || exit 1"]
+      interval: 5s
+      start_interval: 2s
+      timeout: 3s
+      retries: 3
+      start_period: ${HEALTH_MAX_WAIT:-30m}
+
+  decode:
+    <<: *engine
+    entrypoint: ["/bin/bash", "/opt/vllm/engine/decode.sh"]
+    depends_on:
+      kv-master:
+        condition: service_healthy
+      kv-meta:
+        condition: service_healthy
+    environment:
+      HOST_ID: ${HOST_ID}
+      BIND_IP: ${BIND_IP}
+      NIC: ${NIC}
+      MODEL: ${MODEL}
+      DRAFT: ${DRAFT:-}
+      SERVED_NAME: ${SERVED_NAME}
+      TP: ${TP}
+      ENABLE_EP: ${ENABLE_EP}
+      MAX_MODEL_LEN: ${MAX_MODEL_LEN}
+      MAX_NUM_SEQS: ${MAX_NUM_SEQS}
+      SPEC_TOKENS: ${SPEC_TOKENS}
+      SPEC_METHOD: ${SPEC_METHOD}
+      BLOCK_SIZE: ${BLOCK_SIZE}
+      PREFIX_RETENTION: ${PREFIX_RETENTION}
+      TOOL_PARSER: ${TOOL_PARSER}
+      REASONING_PARSER: ${REASONING_PARSER}
+      CHAT_TEMPLATE_KWARGS: ${CHAT_TEMPLATE_KWARGS}
+      MODEL_LOADER_CONFIG: ${MODEL_LOADER_CONFIG}
+      HCCL_BUFFSIZE: ${HCCL_BUFFSIZE}
+      D_PORT: ${D_PORT}
+      D_NPUS: ${D_NPUS}
+      D_GMU: ${D_GMU}
+      D_CHUNK: ${D_CHUNK}
+      D_CAPTURE_MODE: ${D_CAPTURE_MODE}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:${D_PORT}/health >/dev/null || exit 1"]
+      interval: 5s
+      start_interval: 2s
+      timeout: 3s
+      retries: 3
+      start_period: ${HEALTH_MAX_WAIT:-30m}
+
+  # ---- PD 编排 ----
+  router:
+    image: ${ROUTER_IMAGE}
+    network_mode: host
+    restart: unless-stopped
+    stop_grace_period: 30s
+    logging: *logging
+    depends_on:
+      prefill:
+        condition: service_healthy
+      decode:
+        condition: service_healthy
+    command:
+      - vllm-router
+      - --host
+      - ${BIND_IP}
+      - --port
+      - "${ROUTER_PORT}"
+      - --vllm-pd-disaggregation
+      - --kv-connector
+      - ${KV_CONNECTOR}
+      - --prefill
+      - http://${BIND_IP}:${P_PORT}
+      - "${KV_BOOTSTRAP_PORT}"
+      - --decode
+      - http://${BIND_IP}:${D_PORT}
+      - --prefill-policy
+      - ${ROUTER_PREFILL_POLICY}
+      - --decode-policy
+      - ${ROUTER_DECODE_POLICY}
+      - --health-check-interval-secs
+      - "3"
+      - --retry-max-retries
+      - "3"
+      - --cb-failure-threshold
+      - "5"
+      - --prometheus-host
+      - ${BIND_IP}
+      - --prometheus-port
+      - "${METRICS_PORT}"
+      - --log-level
+      - info
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://${BIND_IP}:${METRICS_PORT}/metrics >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+volumes:
+  mmc-shm:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: "size=${MMC_SHM_SIZE:-820g},mode=1777"
