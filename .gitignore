@@ -1,0 +1,19 @@
+# 真实主机配置（由 make init 生成，不进仓库）
+hosts/*/.env
+hosts/*/host.yaml
+hosts/*/*.json
+hosts/*/*.conf
+
+# 版本锁（由 versions.env.example 复制生成）
+versions.env
+
+# 秘密
+*.secret.env
+.env
+
+# Python
+__pycache__/
+*.pyc
+
+# 临时/日志
+*.log
