@@ -16,7 +16,7 @@
                               │
                               ▼
                  ┌────────────────────────────┐
-                 │ router :8080               │  vllm-router
+                 │ router :8080               │  PD shim (shim/pd_proxy.py)
                  │ PD 编排 / 重试 / 熔断       │  metrics :29000
                  └────────────┬───────────────┘
                               │ 一次请求两跳
@@ -61,8 +61,7 @@ make init HOST=node1
 #    kv-p.json / kv-d.json / p-additional.json / d-additional.json
 #    mmc-local.conf / mmc-meta.conf
 
-# 3. 构建 router 镜像（tag 与 versions.env 里的 ROUTER_IMAGE 一致）
-docker build -f router/Dockerfile -t vllm-router:0.1.17 .
+# 3. router 使用 shim（复用 vllm 镜像，无需额外构建）
 
 # 4. 校验配置
 make check HOST=node1
@@ -95,8 +94,10 @@ make logs HOST=node1
 │   ├── build_args.sh            # 环境变量 -> vLLM CLI 参数
 │   ├── prefill.sh               # exec vllm serve
 │   └── decode.sh                # exec vllm serve
+├── shim/
+│   └── pd_proxy.py              # PD 编排 shim（转发 prefill 响应里的 KV 参数）
 ├── router/
-│   └── Dockerfile               # vllm-router 镜像
+│   └── Dockerfile               # 可选：vllm-router 镜像（当前未使用）
 ├── scripts/
 │   ├── init.sh                  # 生成 hosts/<host>/ 模板
 │   └── check.py                 # 配置自检
@@ -243,7 +244,7 @@ git ls-files | grep -x versions.env && echo "versions.env 被跟踪！"
 
 - 只覆盖单机 1P1D，不涉及多机调度与 Kubernetes
 - 面向 Ascend（`--quantization ascend`、`davinci*`、HCCL、Mooncake/AscendStore），不是跨加速器的通用部署
-- `vllm-router` 仍处于 0.1.x，上线前请用真实流量验证流式输出、`usage` 统计与异常重算路径
+- `vllm-router` 0.1.17 的 Mooncake 模式要求 prefill 在 8998 提供 `/query` bootstrap，而 vllm-ascend 的 `MooncakeConnectorV1` 不提供，因此默认用 `shim/pd_proxy.py` 做 PD 编排；`router/Dockerfile` 保留给后续兼容版本
 - 通过 router 访问 Anthropic `/v1/messages` 的组合未在本骨架中验证，需要时请单独测试
 - 未附带 LICENSE，使用前请自行选择
 
@@ -253,3 +254,4 @@ git ls-files | grep -x versions.env && echo "versions.env 被跟踪！"
 - **参数来自环境变量**：新增一个 vLLM 参数只需改 `.env`，不用改脚本；推导不出的才进映射表
 - **真实的配置不进 git**：仓库只保留模板与逻辑，避免把地址、路径、密钥带进公开历史
 - **不做跨硬件抽象**：设备节点、连接器、镜像本来就是平台特有的，强行抽象只会让排错更难
+- **PD 编排用 shim 而不是 vllm-router**：后者的 Mooncake 实现与 vllm-ascend 的连接器不兼容；shim 直接使用 prefill 响应里的 `kv_transfer_params`，行为可预测

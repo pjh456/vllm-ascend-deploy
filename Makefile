@@ -1,6 +1,7 @@
 SHELL := /bin/bash
 
 HOST ?=
+UP_TIMEOUT ?= 1800
 STACK_DIR := $(CURDIR)
 PROJECT := vllm-$(subst .,-,$(HOST))
 
@@ -22,7 +23,7 @@ check: guard
 	@$(COMPOSE) config -q
 
 up: check
-	@$(COMPOSE) up -d --wait --wait-timeout 1800
+	@$(COMPOSE) up -d --wait --wait-timeout $(UP_TIMEOUT)
 
 down: guard
 	@$(COMPOSE) down
