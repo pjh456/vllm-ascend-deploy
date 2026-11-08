@@ -8,7 +8,7 @@ COMPOSE := STACK_DIR=$(STACK_DIR) docker compose -p vllm-$(HOST) \
              --env-file hosts/$(HOST)/.env \
              -f compose.yaml -f hosts/$(HOST)/host.yaml
 
-.PHONY: guard init check up down logs ps install-unit
+.PHONY: guard init check up down logs ps install-unit args
 
 guard:
 	@test -n "$(HOST)" || { echo "缺少 HOST，例如: make up HOST=1.2"; exit 1; }
@@ -31,6 +31,10 @@ logs: guard
 
 ps: guard
 	@$(COMPOSE) ps
+
+SERVICE ?= prefill
+args: guard
+	@$(COMPOSE) run --rm --no-deps -e DRY_RUN=1 $(SERVICE)
 
 install-unit:
 	sed "s#__STACK_DIR__#$(CURDIR)#g" systemd/vllm-stack@.service \
