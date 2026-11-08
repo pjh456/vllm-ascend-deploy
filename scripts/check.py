@@ -55,10 +55,15 @@ def main() -> int:
     if len(set(ports.values())) != len(ports):
         errors.append(f"端口重复: {ports}")
 
+    model_root = real.get("MODEL_ROOT", "")
     for key in ("MODEL", "DRAFT"):
         path = real.get(key, "")
-        if path and not os.path.exists(path):
+        if not path:
+            continue
+        if not os.path.exists(path):
             errors.append(f"{key} 路径不存在: {path}")
+        if model_root and not path.startswith(model_root.rstrip(os.sep) + os.sep):
+            errors.append(f"{key} 不在 MODEL_ROOT={model_root} 之下，容器内不可见")
 
     for name in JSON_FILES:
         path = os.path.join(conf, name)
