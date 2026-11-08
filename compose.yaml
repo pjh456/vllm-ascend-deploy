@@ -20,6 +20,7 @@ x-engine: &engine
   logging: *logging
   volumes:
     - ${STACK_DIR}:/opt/vllm:ro
+    - /etc/localtime:/etc/localtime:ro
     - ${MODEL_ROOT}:${MODEL_ROOT}:ro
     - ${CACHE_ROOT}:/root/.cache
     - /usr/local/dcmi:/usr/local/dcmi
@@ -40,6 +41,7 @@ services:
     logging: *logging
     volumes:
       - ${STACK_DIR}:/opt/vllm:ro
+      - /etc/localtime:/etc/localtime:ro
     command:
       - mooncake_master
       - --port
@@ -63,6 +65,7 @@ services:
     logging: *logging
     volumes:
       - ${STACK_DIR}:/opt/vllm:ro
+      - /etc/localtime:/etc/localtime:ro
     environment:
       MMC_META_CONFIG_PATH: /opt/vllm/hosts/${HOST_ID}/mmc-meta.conf
       MMC_LOCAL_CONFIG_PATH: /opt/vllm/hosts/${HOST_ID}/mmc-local.conf
@@ -131,6 +134,7 @@ services:
         condition: service_healthy
     volumes:
       - ${STACK_DIR}:/opt/vllm:ro
+      - /etc/localtime:/etc/localtime:ro
     environment:
       LB_PROXY_LOG_FILE: /tmp/pd_proxy.log
     command:
