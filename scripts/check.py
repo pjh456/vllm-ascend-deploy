@@ -51,6 +51,21 @@ def main() -> int:
     if unset:
         errors.append(f".env 仍有占位符: {', '.join(unset)}")
 
+    if not os.path.isfile(os.path.join(ROOT, "env", "common.env")):
+        errors.append("缺少 env/common.env")
+
+    rt_tmpl_path = os.path.join(ROOT, "hosts", "runtime.env.example")
+    rt_path = os.path.join(conf, "runtime.env")
+    if os.path.isfile(rt_tmpl_path):
+        rt_tmpl = parse_env(rt_tmpl_path)
+        if not os.path.isfile(rt_path):
+            errors.append("缺少 runtime.env")
+        else:
+            rt_real = parse_env(rt_path)
+            missing_rt = sorted(set(rt_tmpl) - set(rt_real))
+            if missing_rt:
+                errors.append(f"runtime.env 缺少键: {', '.join(missing_rt)}")
+
     ports = {k: real.get(k, "") for k in PORT_KEYS}
     if len(set(ports.values())) != len(ports):
         errors.append(f"端口重复: {ports}")
@@ -64,6 +79,20 @@ def main() -> int:
             errors.append(f"{key} 路径不存在: {path}")
         if model_root and not path.startswith(model_root.rstrip(os.sep) + os.sep):
             errors.append(f"{key} 不在 MODEL_ROOT={model_root} 之下，容器内不可见")
+
+    # @file 形式的参数值：容器内路径 /opt/vllm/... 映射回仓库根目录
+    for key, value in real.items():
+        if not value.startswith("@"):
+            continue
+        path = value[1:]
+        if path.startswith("/opt/vllm/"):
+            path = os.path.join(ROOT, path[len("/opt/vllm/"):])
+        if not os.path.isfile(path):
+            errors.append(f"{key} 指向的文件不存在: {value}")
+
+    for key in ("P_CAPTURE_MODE", "D_CAPTURE_MODE"):
+        if not real.get(key):
+            errors.append(f"{key} 未设置")
 
     for name in JSON_FILES:
         path = os.path.join(conf, name)
@@ -85,7 +114,7 @@ def main() -> int:
             kvp = json.load(open(kvp_path, encoding="utf-8"))
             mc = kvp["kv_connector_extra_config"]["connectors"][0]
             extra = mc["kv_connector_extra_config"]
-            tp = int(real["TP"])
+            tp = int(real.get("COMMON_TP") or 0)
             for role in ("prefill", "decode"):
                 if int(extra[role]["tp_size"]) != tp:
                     errors.append(f"kv-p.json {role}.tp_size 与 TP={tp} 不一致")
@@ -101,11 +130,14 @@ def main() -> int:
         match = re.search(r"world_size\s*=\s*(\d+)", open(mmc_path, encoding="utf-8").read())
         if not match:
             errors.append("mmc-local.conf 缺少 world_size")
-        elif int(match.group(1)) < int(real["TP"]) * 2:
-            errors.append(f"mmc-local.conf world_size 小于 TP*2={int(real['TP']) * 2}")
+        elif int(match.group(1)) < tp * 2:
+            errors.append(f"mmc-local.conf world_size 小于 TP*2={tp * 2}")
 
-    step = int(real["SPEC_TOKENS"]) + 1
-    seqs = int(real["MAX_NUM_SEQS"])
+    if tp <= 0:
+        errors.append("COMMON_TP 未设置")
+
+    step = int(real.get("SPEC_TOKENS") or 0) + 1
+    seqs = int(real.get("COMMON_MAX_NUM_SEQS") or 0)
     print(f"capture sizes: {step}..{step * seqs}，共 {seqs} 个（步长 {step}）")
 
     if errors:

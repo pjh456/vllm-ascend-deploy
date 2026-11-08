@@ -82,32 +82,10 @@ services:
         condition: service_healthy
       kv-meta:
         condition: service_healthy
-    environment:
-      HOST_ID: ${HOST_ID}
-      BIND_IP: ${BIND_IP}
-      NIC: ${NIC}
-      MODEL: ${MODEL}
-      DRAFT: ${DRAFT:-}
-      SERVED_NAME: ${SERVED_NAME}
-      TP: ${TP}
-      ENABLE_EP: ${ENABLE_EP}
-      MAX_MODEL_LEN: ${MAX_MODEL_LEN}
-      MAX_NUM_SEQS: ${MAX_NUM_SEQS}
-      SPEC_TOKENS: ${SPEC_TOKENS}
-      SPEC_METHOD: ${SPEC_METHOD}
-      BLOCK_SIZE: ${BLOCK_SIZE}
-      PREFIX_RETENTION: ${PREFIX_RETENTION}
-      TOOL_PARSER: ${TOOL_PARSER}
-      REASONING_PARSER: ${REASONING_PARSER}
-      CHAT_TEMPLATE_KWARGS: ${CHAT_TEMPLATE_KWARGS}
-      MODEL_LOADER_CONFIG: ${MODEL_LOADER_CONFIG}
-      HCCL_BUFFSIZE: ${HCCL_BUFFSIZE}
-      P_PORT: ${P_PORT}
-      P_NPUS: ${P_NPUS}
-      P_GMU: ${P_GMU}
-      P_CHUNK: ${P_CHUNK}
-      P_CAPTURE_MODE: ${P_CAPTURE_MODE}
-      P_API_SERVERS: ${P_API_SERVERS}
+    env_file:
+      - env/common.env
+      - hosts/${HOST_ID}/runtime.env
+      - hosts/${HOST_ID}/.env
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:${P_PORT}/health >/dev/null || exit 1"]
       interval: 5s
@@ -124,31 +102,10 @@ services:
         condition: service_healthy
       kv-meta:
         condition: service_healthy
-    environment:
-      HOST_ID: ${HOST_ID}
-      BIND_IP: ${BIND_IP}
-      NIC: ${NIC}
-      MODEL: ${MODEL}
-      DRAFT: ${DRAFT:-}
-      SERVED_NAME: ${SERVED_NAME}
-      TP: ${TP}
-      ENABLE_EP: ${ENABLE_EP}
-      MAX_MODEL_LEN: ${MAX_MODEL_LEN}
-      MAX_NUM_SEQS: ${MAX_NUM_SEQS}
-      SPEC_TOKENS: ${SPEC_TOKENS}
-      SPEC_METHOD: ${SPEC_METHOD}
-      BLOCK_SIZE: ${BLOCK_SIZE}
-      PREFIX_RETENTION: ${PREFIX_RETENTION}
-      TOOL_PARSER: ${TOOL_PARSER}
-      REASONING_PARSER: ${REASONING_PARSER}
-      CHAT_TEMPLATE_KWARGS: ${CHAT_TEMPLATE_KWARGS}
-      MODEL_LOADER_CONFIG: ${MODEL_LOADER_CONFIG}
-      HCCL_BUFFSIZE: ${HCCL_BUFFSIZE}
-      D_PORT: ${D_PORT}
-      D_NPUS: ${D_NPUS}
-      D_GMU: ${D_GMU}
-      D_CHUNK: ${D_CHUNK}
-      D_CAPTURE_MODE: ${D_CAPTURE_MODE}
+    env_file:
+      - env/common.env
+      - hosts/${HOST_ID}/runtime.env
+      - hosts/${HOST_ID}/.env
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:${D_PORT}/health >/dev/null || exit 1"]
       interval: 5s

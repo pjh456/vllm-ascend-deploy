@@ -1,5 +1,6 @@
 # 真实主机配置（由 make init 生成，不进仓库）
 hosts/*/.env
+hosts/*/runtime.env
 hosts/*/host.yaml
 hosts/*/*.json
 hosts/*/*.conf

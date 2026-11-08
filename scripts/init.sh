@@ -22,7 +22,7 @@ cp hosts/.env.example "$DST/.env"
 cp hosts/host.yaml.example "$DST/host.yaml"
 
 for f in kv-p.json kv-d.json p-additional.json d-additional.json \
-         mmc-local.conf mmc-meta.conf mooncake.json; do
+         mmc-local.conf mmc-meta.conf mooncake.json runtime.env; do
   cp "hosts/${f}.example" "$DST/${f}"
 done
 
