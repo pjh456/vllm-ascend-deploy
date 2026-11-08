@@ -118,9 +118,10 @@ def main() -> int:
             for role in ("prefill", "decode"):
                 if int(extra[role]["tp_size"]) != tp:
                     errors.append(f"kv-p.json {role}.tp_size 与 TP={tp} 不一致")
-            if str(mc["kv_port"]) != str(real["KV_BOOTSTRAP_PORT"]):
+            bootstrap = str(real.get("KV_BOOTSTRAP_PORT", "")).strip()
+            if bootstrap.lower() not in ("", "none") and str(mc["kv_port"]) != bootstrap:
                 errors.append(
-                    f"kv-p.json kv_port={mc['kv_port']} 与 KV_BOOTSTRAP_PORT={real['KV_BOOTSTRAP_PORT']} 不一致"
+                    f"kv-p.json kv_port={mc['kv_port']} 与 KV_BOOTSTRAP_PORT={bootstrap} 不一致"
                 )
         except (KeyError, TypeError, ValueError) as exc:
             errors.append(f"kv-p.json 结构异常: {exc}")
