@@ -192,6 +192,7 @@ make logs HOST=node1
 
 2. **设备节点按服务划分**
    `hosts/<host>/host.yaml` 只放列表型硬件差异（`/dev/davinci*` 等），prefill 与 decode 分别映射自己的卡，二者都保留 `davinci_manager`、`devmm_svm`、`hisi_hdc`。
+   映射子集时，`P_NPUS` / `D_NPUS` 必须写**容器内逻辑编号**（通常都是 `0,1,2,3`），物理卡由 `devices:` 决定；写成物理编号会导致 `ASCEND_RT_VISIBLE_DEVICES ... invalid / aclInit 107001`。
 
 3. **单机 `network_mode: host`**
    容器直接使用宿主网络，端口不能重复；`BIND_IP` 决定监听地址。
