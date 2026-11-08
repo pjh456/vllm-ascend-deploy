@@ -27,6 +27,7 @@ for f in kv-p.json kv-d.json p-additional.json d-additional.json \
 done
 
 sed -i "s/__HOST__/${HOST}/g" "$DST/.env"
+sed -i "s/^COMPOSE_PROJECT_NAME=.*/COMPOSE_PROJECT_NAME=vllm-${HOST//./-}/" "$DST/.env"
 
 echo "created ${DST}"
 echo "替换 ${DST}/.env 与同目录文件里的 __占位符__，然后执行: make check HOST=${HOST}"

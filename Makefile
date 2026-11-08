@@ -2,8 +2,9 @@ SHELL := /bin/bash
 
 HOST ?=
 STACK_DIR := $(CURDIR)
+PROJECT := vllm-$(subst .,-,$(HOST))
 
-COMPOSE := STACK_DIR=$(STACK_DIR) docker compose -p vllm-$(HOST) \
+COMPOSE := STACK_DIR=$(STACK_DIR) docker compose -p $(PROJECT) \
              --env-file versions.env \
              --env-file hosts/$(HOST)/.env \
              -f compose.yaml -f hosts/$(HOST)/host.yaml
