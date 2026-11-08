@@ -22,6 +22,32 @@ export MOONCAKE_CONFIG_PATH="${CONF_DIR}/mooncake.json"
 export MMC_META_CONFIG_PATH="${CONF_DIR}/mmc-meta.conf"
 export MMC_LOCAL_CONFIG_PATH="${CONF_DIR}/mmc-local.conf"
 
+# 可选：把镜像内的 vllm-ascend 固定到指定 fork 分支（与旧部署脚本行为一致）
+# 不设置 VLLM_ASCEND_BRANCH 时直接使用镜像自带版本
+if [[ "${DRY_RUN:-0}" != "1" && -n "${VLLM_ASCEND_BRANCH:-}" ]]; then
+  _dir="${VLLM_ASCEND_DIR:-/vllm-workspace/vllm-ascend}"
+  if [[ -d "$_dir/.git" ]]; then
+    _ok=0
+    for _attempt in 1 2 3 4 5; do
+      if GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+         https_proxy="${VLLM_ASCEND_FETCH_PROXY:-}" \
+         http_proxy="${VLLM_ASCEND_FETCH_PROXY:-}" \
+         git -C "$_dir" fetch --no-tags "${VLLM_ASCEND_REPO:?VLLM_ASCEND_REPO 未设置}" "$VLLM_ASCEND_BRANCH"; then
+        _ok=1
+        break
+      fi
+      echo "[vllm-ascend] fetch attempt ${_attempt}/5 failed, retry in 3s"
+      sleep 3
+    done
+    if [[ "$_ok" == "1" ]]; then
+      git -C "$_dir" checkout -f -B "$VLLM_ASCEND_BRANCH" FETCH_HEAD
+      echo "[vllm-ascend] pinned to $VLLM_ASCEND_BRANCH @ $(git -C "$_dir" rev-parse --short HEAD)"
+    else
+      echo "[vllm-ascend] WARN: fetch failed, keep $(git -C "$_dir" rev-parse --short HEAD)"
+    fi
+  fi
+fi
+
 # DRY_RUN 只拼参数，跳过所有重量级初始化
 if [[ "${DRY_RUN:-0}" != "1" ]]; then
   # jemalloc：按镜像实际情况挑第一个存在的，避免写死路径后静默失效

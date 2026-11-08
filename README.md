@@ -130,6 +130,16 @@ make logs HOST=node1
 
 `HCCL_IF_IP`、`GLOO_SOCKET_IFNAME`、`TP_SOCKET_IFNAME`、`HCCL_SOCKET_IFNAME` 由 `BIND_IP` / `NIC` 在 `engine/common.sh` 里派生，不需要重复配置。
 
+如果镜像内 `/vllm-workspace/vllm-ascend` 的 commit 与你要用的 fork 分支不一致，在 `runtime.env` 里设置：
+
+```bash
+VLLM_ASCEND_REPO=https://github.com/YOUR_ACCOUNT/vllm-ascend.git
+VLLM_ASCEND_BRANCH=deploy/YOUR_BRANCH
+VLLM_ASCEND_FETCH_PROXY=http://YOUR_PROXY:PORT
+```
+
+容器启动时会先 `git fetch` + `checkout` 再 `exec vllm`；不设置则直接使用镜像自带版本。镜像版本与分支不一致的典型症状是 DFlash2 / aclgraph 相关的 `Forward context is not set` 断言。
+
 ### 参数命名约定
 
 `engine/build_args.sh` 把环境变量自动转成 CLI 参数：
