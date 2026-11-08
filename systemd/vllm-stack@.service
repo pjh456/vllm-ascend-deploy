@@ -1,0 +1,16 @@
+[Unit]
+Description=vLLM Ascend stack (%i)
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=__STACK_DIR__
+ExecStart=/usr/bin/make up HOST=%i
+ExecStop=/usr/bin/make down HOST=%i
+TimeoutStartSec=1900
+
+[Install]
+WantedBy=multi-user.target
