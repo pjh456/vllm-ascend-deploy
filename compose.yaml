@@ -114,9 +114,12 @@ services:
       retries: 3
       start_period: ${HEALTH_MAX_WAIT:-30m}
 
-  # ---- PD 编排 ----
+  # ---- PD 编排（shim）----
+  # vllm-router 0.1.17 的 Mooncake 模式要求 prefill 在 8998 提供 /query bootstrap，
+  # 而 vllm-ascend 的 MooncakeConnectorV1 不提供；shim 直接转发 prefill 响应里的
+  # kv_transfer_params，已在旧部署验证。
   router:
-    image: ${ROUTER_IMAGE}
+    image: ${VLLM_IMAGE}
     network_mode: host
     restart: unless-stopped
     stop_grace_period: 30s
@@ -126,38 +129,27 @@ services:
         condition: service_healthy
       decode:
         condition: service_healthy
+    volumes:
+      - ${STACK_DIR}:/opt/vllm:ro
+    environment:
+      LB_PROXY_LOG_FILE: /tmp/pd_proxy.log
     command:
-      - vllm-router
+      - python3
+      - /opt/vllm/shim/pd_proxy.py
       - --host
       - ${BIND_IP}
       - --port
       - "${ROUTER_PORT}"
-      - --vllm-pd-disaggregation
-      - --kv-connector
-      - ${KV_CONNECTOR}
-      - --prefill
-      - http://${BIND_IP}:${P_PORT}
-      - "${KV_BOOTSTRAP_PORT}"
-      - --decode
-      - http://${BIND_IP}:${D_PORT}
-      - --prefill-policy
-      - ${ROUTER_PREFILL_POLICY}
-      - --decode-policy
-      - ${ROUTER_DECODE_POLICY}
-      - --health-check-interval-secs
-      - "3"
-      - --retry-max-retries
-      - "3"
-      - --cb-failure-threshold
-      - "5"
-      - --prometheus-host
+      - --prefiller-host
       - ${BIND_IP}
-      - --prometheus-port
-      - "${METRICS_PORT}"
-      - --log-level
-      - info
+      - --prefiller-port
+      - "${P_PORT}"
+      - --decoder-host
+      - ${BIND_IP}
+      - --decoder-port
+      - "${D_PORT}"
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://${BIND_IP}:${METRICS_PORT}/metrics >/dev/null || exit 1"]
+      test: ["CMD-SHELL", "curl -fsS http://${BIND_IP}:${ROUTER_PORT}/healthcheck >/dev/null || exit 1"]
       interval: 10s
       timeout: 3s
       retries: 3
