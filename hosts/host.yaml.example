@@ -1,0 +1,21 @@
+# 复制为 hosts/<host>/host.yaml；只放列表型的硬件差异。
+# 设备节点就是这台机器特有的，这里不做任何抽象。
+services:
+  prefill:
+    devices:
+      - /dev/davinci0
+      - /dev/davinci1
+      - /dev/davinci2
+      - /dev/davinci3
+      - /dev/davinci_manager
+      - /dev/devmm_svm
+      - /dev/hisi_hdc
+  decode:
+    devices:
+      - /dev/davinci4
+      - /dev/davinci5
+      - /dev/davinci6
+      - /dev/davinci7
+      - /dev/davinci_manager
+      - /dev/devmm_svm
+      - /dev/hisi_hdc

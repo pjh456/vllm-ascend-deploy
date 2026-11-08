@@ -1,0 +1,28 @@
+{
+  "kv_connector": "MultiConnector",
+  "kv_role": "kv_producer",
+  "engine_id": "0",
+  "kv_connector_extra_config": {
+    "connectors": [
+      {
+        "kv_connector": "MooncakeConnectorV1",
+        "kv_role": "kv_producer",
+        "kv_port": "28000",
+        "kv_connector_extra_config": {
+          "prefill": { "dp_size": 1, "tp_size": 4 },
+          "decode": { "dp_size": 1, "tp_size": 4 }
+        }
+      },
+      {
+        "kv_connector": "AscendStoreConnector",
+        "kv_role": "kv_producer",
+        "kv_connector_extra_config": {
+          "backend": "memcache",
+          "lookup_rpc_port": "0",
+          "use_layerwise": false,
+          "load_async": true
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "ascend_compilation_config": {
+    "enable_npugraph_ex": true,
+    "enable_static_kernel": false
+  },
+  "enable_cpu_binding": true,
+  "rejection_sampler_config": {
+    "enable_entropy_verify": true
+  },
+  "scheduler_config": {
+    "recompute_scheduler_enable": true
+  }
+}

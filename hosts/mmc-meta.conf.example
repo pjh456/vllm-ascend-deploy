@@ -1,0 +1,5 @@
+# MemCache MetaService 配置（单节点）
+ock.mmc.meta_service_url = tcp://127.0.0.1:5000
+ock.mmc.meta_service.config_store_url = tcp://127.0.0.1:6000
+ock.mmc.meta_service.metrics_url = http://127.0.0.1:8000
+ock.mmc.log_level = info

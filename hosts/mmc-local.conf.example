@@ -1,0 +1,8 @@
+# MemCache LocalService 配置（host_shm 后端，节点内共享内存）
+# 池大小 = rank 数 × dram.size；请与 P/D 的实际 rank 数一致
+ock.mmc.meta_service_url = tcp://127.0.0.1:5000
+ock.mmc.local_service.config_store_url = tcp://127.0.0.1:6000
+ock.mmc.log_level = info
+ock.mmc.local_service.world_size = 16
+ock.mmc.local_service.protocol = host_shm
+ock.mmc.local_service.dram.size = 64GB

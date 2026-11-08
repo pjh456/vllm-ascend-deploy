@@ -1,0 +1,13 @@
+{
+  "enable_cpu_binding": true,
+  "rejection_sampler_config": {
+    "enable_entropy_verify": true
+  },
+  "scheduler_config": {
+    "short_request_first_config": {
+      "enabled": true,
+      "threshold": 256,
+      "long_max_wait_ms": 10000
+    }
+  }
+}

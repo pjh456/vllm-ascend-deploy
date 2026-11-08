@@ -1,0 +1,36 @@
+{
+  "kv_connector": "MultiConnector",
+  "kv_role": "kv_consumer",
+  "engine_id": "1",
+  "kv_connector_extra_config": {
+    "connectors": [
+      {
+        "kv_connector": "MooncakeConnectorV1",
+        "kv_role": "kv_consumer",
+        "kv_port": "28100",
+        "kv_connector_extra_config": {
+          "prefill": { "dp_size": 1, "tp_size": 4 },
+          "decode": { "dp_size": 1, "tp_size": 4 }
+        }
+      },
+      {
+        "kv_connector": "AscendStoreConnector",
+        "kv_role": "kv_consumer",
+        "kv_connector_extra_config": {
+          "backend": "memcache",
+          "lookup_rpc_port": "1",
+          "consumer_is_to_load": true,
+          "use_layerwise": false,
+          "load_async": true
+        }
+      },
+      {
+        "kv_connector": "PreemptOffloadConnector",
+        "kv_role": "kv_consumer",
+        "kv_connector_extra_config": {
+          "cpu_bytes_to_use_per_rank": 68719476736
+        }
+      }
+    ]
+  }
+}
