@@ -19,3 +19,17 @@ services:
       - /dev/davinci_manager
       - /dev/devmm_svm
       - /dev/hisi_hdc
+  # STACK_MODE=single 时使用；通常一张不剩地用满 8 卡
+  single:
+    devices:
+      - /dev/davinci0
+      - /dev/davinci1
+      - /dev/davinci2
+      - /dev/davinci3
+      - /dev/davinci4
+      - /dev/davinci5
+      - /dev/davinci6
+      - /dev/davinci7
+      - /dev/davinci_manager
+      - /dev/devmm_svm
+      - /dev/hisi_hdc

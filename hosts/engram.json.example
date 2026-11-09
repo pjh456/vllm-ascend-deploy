@@ -1,0 +1,4 @@
+{
+  "cpu_offload": true,
+  "dp_shared_memory": false
+}

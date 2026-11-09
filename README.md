@@ -1,8 +1,11 @@
-# vLLM Ascend PD 部署骨架
+# vLLM Ascend 单机部署骨架（1P1D / 单实例）
 
-基于 Docker Compose 的 vLLM Ascend **Prefill / Decode 分离（1P1D）** 单机部署模板。
+基于 Docker Compose 的 vLLM Ascend 单机部署模板，支持两种模式：
 
-目标不是"一套能跑所有硬件的通用部署"，而是把单机 PD 部署里最容易出错的部分固化成可复用的骨架：
+- **pd（默认）**：Prefill / Decode 分离（1P1D），带 PD shim 与 Mooncake/MemCache 三级 KV 池
+- **single**：单实例聚合，prefill 与 decode 在同一个 vLLM 进程内，直接暴露 OpenAI 兼容 API；适合放不进 1P1D 的模型（例如 Qwen3.8-Flash-Next）
+
+目标不是"一套能跑所有硬件的通用部署"，而是把单机部署里最容易出错的部分固化成可复用的骨架：
 
 - 每个进程一个容器，`PID 1` 就是 vLLM，信号直传，没有 bash supervisor
 - 参数由环境变量按命名约定自动拼装，脚本里没有一长串 `--flag`
@@ -39,6 +42,20 @@
 - **router** 负责把一次客户端请求拆成 P → D 两跳，并做重试与熔断
 - **kv-master / kv-meta** 是 KV 传输与池的元数据基础设施，独立于引擎生命周期
 
+`STACK_MODE=single` 时只启动一个引擎，没有 router、没有 KV 元数据服务：
+
+```
+                 client (OpenAI 兼容协议)
+                              │
+                              ▼
+                 ┌────────────────────────────┐
+                 │ single :8088               │  一个 vLLM 进程
+                 │ NPU 0-7, TP8               │  prefill + decode 聚合
+                 └────────────────────────────┘
+```
+
+单实例模式不启动 Mooncake、MemCache 与 PD shim 容器；`/dev/shm` 仍由 `mmc-shm` 提供（tmpfs 上限由 `MMC_SHM_SIZE` 控制，按实际需要写即可）。
+
 ## 前置条件
 
 - 单机 Ascend 910B（8 卡），CANN / driver 已正确安装，`npu-smi info` 正常
@@ -54,11 +71,13 @@ git clone REPO_URL vllm-ascend-deploy
 cd vllm-ascend-deploy
 
 # 1. 生成主机配置（会被 .gitignore 忽略）
-make init HOST=node1
+make init HOST=node1              # PD 模式
+make init HOST=node1 MODE=single  # 单实例模式
 
 # 2. 填写 hosts/<host>/ 下的配置
 #    .env / runtime.env / host.yaml / mooncake.json
 #    kv-p.json / kv-d.json / p-additional.json / d-additional.json
+#    单实例还要看 s-additional.json / engram.json
 #    mmc-local.conf / mmc-meta.conf
 
 # 3. router 使用 shim（复用 vllm 镜像，无需额外构建）
@@ -67,7 +86,8 @@ make init HOST=node1
 make check HOST=node1
 
 # 5. 预览最终启动参数（不启动推理）
-make args HOST=node1              # prefill
+#    pd 模式默认看 prefill，single 模式默认看 single
+make args HOST=node1
 make args HOST=node1 SERVICE=decode
 
 # 6. 启动
@@ -78,7 +98,7 @@ make ps HOST=node1
 make logs HOST=node1
 ```
 
-`make up` 会等到 prefill / decode 的 `/health` 都通过后才启动 router，最多等待 30 分钟。
+`make up` 会按 `STACK_MODE` 启动对应 profile：PD 模式等 prefill / decode 的 `/health` 都通过后才启动 router，最多等待 30 分钟；单实例模式只等 `single` 的 `/health`。
 
 ## 目录结构
 
@@ -92,8 +112,9 @@ make logs HOST=node1
 ├── engine/
 │   ├── common.sh                # 派生值、库路径、capture 计算
 │   ├── build_args.sh            # 环境变量 -> vLLM CLI 参数
-│   ├── prefill.sh               # exec vllm serve
-│   └── decode.sh                # exec vllm serve
+│   ├── prefill.sh               # PD 模式：exec vllm serve
+│   ├── decode.sh                # PD 模式：exec vllm serve
+│   └── single.sh                # 单实例模式：exec vllm serve
 ├── shim/
 │   └── pd_proxy.py              # PD 编排 shim（转发 prefill 响应里的 KV 参数）
 ├── router/
@@ -111,6 +132,8 @@ make logs HOST=node1
     ├── kv-d.json.example
     ├── p-additional.json.example
     ├── d-additional.json.example
+    ├── s-additional.json.example # 单实例 additional-config 模板
+    ├── engram.json.example      # 单实例 Engram/PLE 模板
     ├── mmc-local.conf.example
     └── mmc-meta.conf.example
 ```
@@ -147,19 +170,22 @@ VLLM_ASCEND_FETCH_PROXY=http://YOUR_PROXY:PORT
 
 | 写法 | 结果 |
 |---|---|
-| `COMMON_MAX_MODEL_LEN=262144` | `--max-model-len 262144`（P/D 共享） |
+| `COMMON_MAX_MODEL_LEN=262144` | `--max-model-len 262144`（P/D/单实例共享） |
 | `P_GPU_MEMORY_UTILIZATION=0.85` | `--gpu-memory-utilization 0.85`（仅 prefill） |
 | `D_MAX_NUM_BATCHED_TOKENS=1536` | `--max-num-batched-tokens 1536`（仅 decode） |
+| `S_PORT=8088` | `--port 8088`（仅单实例，同时也是对外端口） |
 | `COMMON_ENABLE_PREFIX_CACHING=true` | `--enable-prefix-caching`（裸 flag） |
 | `COMMON_ENABLE_PREFIX_CACHING=false` | 不添加 |
 | `P_KV_TRANSFER_CONFIG=@/opt/vllm/hosts/<host>/kv-p.json` | 参数值从文件读取（JSON） |
+| `S_ENGRAM_CONFIG=@/opt/vllm/hosts/<host>/engram.json` | 读成 `--engram-config '<json>'` |
 
 - 大写转小写、下划线转连字符
-- `P_` / `D_` 同名键会覆盖 `COMMON_` 键
+- `P_` / `D_` / `S_` 同名键会覆盖 `COMMON_` 键
 - 不以上述前缀开头的变量只作配置，不会变成参数
 - 只有推导不出名字的才需要映射：`TP`、`SERVED_NAME`、`PREFIX_RETENTION`、`TOOL_PARSER`、`CHAT_TEMPLATE_KWARGS`、`MODEL_LOADER_CONFIG`、`ENABLE_EP`
-- `NPUS`、`CAPTURE_MODE` 只给脚本用，不生成参数
+- `NPUS`、`CAPTURE_MODE`、`COMPILATION_CONFIG`、`SPEC_TOKENS`、`SPEC_METHOD`、`SPEC_ENFORCE_EAGER` 只给脚本用，不生成参数
 - capture sizes 由 `MAX_NUM_SEQS × (SPEC_TOKENS + 1)` 自动生成，不再手写数组
+- 单实例模式下 `S_*` 覆盖 `COMMON_*`；例如 `S_MAX_NUM_SEQS` 会覆盖 `COMMON_MAX_NUM_SEQS`
 
 用 `make args` 可以在真正启动前看到拼装结果；未知变量会变成 `--flag` 并由 vLLM 报错，所以建议每次改完参数先预览一次。
 
@@ -169,14 +195,99 @@ VLLM_ASCEND_FETCH_PROXY=http://YOUR_PROXY:PORT
 - 本仓库以只读方式挂载到容器内 `/opt/vllm`，因此 `@` 参数写成 `/opt/vllm/hosts/<host>/...`
 - `check.py` 会把容器内 `/opt/vllm/...` 映射回仓库根目录做存在性校验
 
+## 单实例（聚合）部署
+
+`compose.yaml` 里的 `single` 服务在 `profiles: ["single"]` 下，`STACK_MODE=single` 时激活；PD 相关的 `kv-master` / `kv-meta` / `prefill` / `decode` / `router` 都在 `profiles: ["pd"]` 下，不会启动。
+
+```bash
+make init HOST=qwen38 MODE=single
+# 编辑 hosts/qwen38/.env、runtime.env、host.yaml
+make check HOST=qwen38
+make args HOST=qwen38      # 自动选择 single 服务
+make up HOST=qwen38        # 176B 模型可加 UP_TIMEOUT=3600
+```
+
+已有 PD 主机切换成单实例时，先把 `STACK_MODE` 改成 `single`，再从 `hosts/.env.example` 补上 `S_*` 段（`check.py` 会按模式检查必填键），先 `make down` 再 `make up`，避免旧的 P/D 容器继续占卡。
+
+单实例与 PD 的差异：
+
+| 项目 | pd | single |
+|---|---|---|
+| 入口 | `router:8080` | `single:8088`（由 `S_PORT` 决定） |
+| 推理进程 | prefill + decode | 一个 vLLM（prefill/decode 聚合） |
+| KV 基础设施 | mooncake + memcache | 不需要 |
+| NPU | P/D 各一组 | `S_NPUS` 指定，通常 8 卡 |
+| 参数前缀 | `P_` / `D_` | `S_`（覆盖 `COMMON_`） |
+
+### Qwen3.8-Flash-Next 示例
+
+Qwen3.8-Flash-Next 是 125B 骨干 + 51B Engram（PLE）表的 MoE 模型，单实例 TP8 才放得下，因此不适合 1P1D。Ascend 侧建议使用与硬件匹配的镜像（A2 用通用 `v0.30.0-a2`，A3 可用 `qwen3.8-next-a3` / `v0.30.0-a3`）；镜像可以在单个主机的 `.env` 里覆盖：
+
+```bash
+# hosts/<host>/.env
+STACK_MODE=single
+# 按实际硬件替换镜像
+VLLM_IMAGE=quay.io/ascend/vllm-ascend:v0.30.0-a2
+
+MODEL=/data/modelscope/models/Eco-Tech/Qwen3.8-Flash-Next-w4a8
+# 使用模型自带 MTP 头，不挂外部 draft
+DRAFT=
+SPEC_TOKENS=3
+SPEC_METHOD=qwen3_5_mtp
+SPEC_ENFORCE_EAGER=false
+
+COMMON_SERVED_NAME=qwen3.8-flash-next
+COMMON_TP=8
+COMMON_ENABLE_EP=true
+COMMON_MAX_MODEL_LEN=131072
+COMMON_ENABLE_PREFIX_CACHING=true
+COMMON_ASYNC_SCHEDULING=true
+COMMON_ENABLE_AUTO_TOOL_CHOICE=true
+COMMON_TOOL_PARSER=qwen3_xml
+COMMON_REASONING_PARSER=qwen3
+COMMON_QUANTIZATION=ascend
+# 留空表示不传 --prefix-cache-retention-interval
+COMMON_PREFIX_RETENTION=
+
+S_PORT=8088
+S_NPUS=0,1,2,3,4,5,6,7
+S_GPU_MEMORY_UTILIZATION=0.93
+S_MAX_NUM_SEQS=8
+S_MAX_NUM_BATCHED_TOKENS=4096
+S_CAPTURE_MODE=FULL_DECODE_ONLY
+S_MAMBA_CACHE_MODE=align
+S_TRUST_REMOTE_CODE=true
+S_ADDITIONAL_CONFIG=@/opt/vllm/hosts/<host>/s-additional.json
+S_ENGRAM_CONFIG=@/opt/vllm/hosts/<host>/engram.json
+MMC_SHM_SIZE=128g
+HEALTH_MAX_WAIT=60m
+STOP_GRACE=180s
+```
+
+`runtime.env` 建议补上（模型加载慢，健康检查要有足够时间）：
+
+```bash
+VLLM_ENGINE_READY_TIMEOUT_S=4800
+VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS=3000
+```
+
+要点：
+
+- **Engram/PLE**：`S_ENGRAM_CONFIG` 默认指向 `engram.json`，内容是 `{"cpu_offload": true, "dp_shared_memory": false}`。51B 的 n-gram 表放宿主内存，机器至少预留 **51 GB + 运行余量**；不要把它设成 `cpu_offload=false`，NPU 显存放不下。
+- **MTP**：`DRAFT` 留空，`SPEC_METHOD=qwen3_5_mtp`，`SPEC_TOKENS=3`；脚本会生成 `--speculative-config '{"method":"qwen3_5_mtp","num_speculative_tokens":3,"enforce_eager":false}'`。若仍写 `SPEC_METHOD=dflash` 又没给 `DRAFT`，`make args` 会直接报错。
+- **前缀缓存**：Qwen3.8-Flash-Next 上仍是实验特性。启用 `--enable-prefix-caching` 时必须同时 `--mamba-cache-mode align`，并按实际上下文长度/并发重新验证 NPU 显存。
+- **additional-config**：`s-additional.json.example` 是 A2/A3 单实例模板（shared expert DP、FlashComm1、CPU 绑定、关闭 fused MC2 等）；A3 可把 `enable_static_kernel` 改为 `true`。
+- **/dev/shm**：单实例仍复用 `mmc-shm`，把 `MMC_SHM_SIZE` 改成 `128g` 左右即可；tmpfs 只按实际写入计费，上限大不会直接占内存。
+- **镜像与版本**：Qwen3.8-Flash-Next 需要 vllm-ascend `v0.26.0rc` 以上，推荐 `v0.32.0rc`；不要拿跑 Qwen3.6/3.8-27B 的旧镜像直接启动。
+
 ## 常用命令
 
 | 命令 | 作用 |
 |---|---|
-| `make init HOST=node1` | 从 `*.example` 生成 `hosts/<host>/` 和 `versions.env` |
-| `make check HOST=node1` | 路径、端口、JSON、TP/world_size 一致性、`compose config` |
-| `make args HOST=node1 [SERVICE=decode]` | 以 `DRY_RUN=1` 打印最终参数（不加载模型、不占 NPU） |
-| `make up HOST=node1` | `check` 后 `up -d --wait`，等引擎健康再起 router |
+| `make init HOST=node1 [MODE=single]` | 从 `*.example` 生成 `hosts/<host>/` 和 `versions.env` |
+| `make check HOST=node1` | 路径、端口、JSON、TP/world_size 一致性、`compose config`（按 `STACK_MODE` 校验） |
+| `make args HOST=node1 [SERVICE=decode]` | 以 `DRY_RUN=1` 打印最终参数；single 模式默认打印 `single` |
+| `make up HOST=node1` | `check` 后按 `STACK_MODE` 启动对应 profile，并等待健康检查 |
 | `make down HOST=node1` | 停止并移除容器 |
 | `make logs HOST=node1` | 跟踪日志 |
 | `make ps HOST=node1` | 查看状态 |
@@ -186,12 +297,13 @@ VLLM_ASCEND_FETCH_PROXY=http://YOUR_PROXY:PORT
 
 ## 启动与关闭语义
 
-- 引擎服务 `restart: "no"`：崩溃就停住，不会无限重启；需要开机自启时用 `systemd/vllm-stack@.service`
-- 基础设施与 router `restart: unless-stopped`：秒级启动，可独立重启
+- 引擎服务（prefill / decode / single）`restart: "no"`：崩溃就停住，不会无限重启；需要开机自启时用 `systemd/vllm-stack@.service`
+- 基础设施与 router `restart: unless-stopped`：秒级启动，可独立重启；单实例模式不启动它们
 - 引擎脚本以 `exec vllm serve ...` 结尾，容器 `PID 1` 就是 vLLM，`docker stop` 直接发给它
 - `stop_grace_period` 建议不小于 vLLM 的退出时间（默认 120s）
 - 健康检查：
   - `prefill` / `decode`：`curl 127.0.0.1:<port>/health`
+  - `single`：`curl 127.0.0.1:${S_PORT}/health`
   - `start_interval: 2s`：端口一就绪就翻绿，`start_period` 只是告警上限
   - `router` 通过 `depends_on: condition: service_healthy` 等待两个引擎
 
@@ -202,8 +314,8 @@ VLLM_ASCEND_FETCH_PROXY=http://YOUR_PROXY:PORT
    池大小 = rank 数 × `mmc-local.conf` 里的 `dram.size`，请让 `MMC_SHM_SIZE` 留出余量。
 
 2. **设备节点按服务划分**
-   `hosts/<host>/host.yaml` 只放列表型硬件差异（`/dev/davinci*` 等），prefill 与 decode 分别映射自己的卡，二者都保留 `davinci_manager`、`devmm_svm`、`hisi_hdc`。
-   映射子集时，`P_NPUS` / `D_NPUS` 必须写**容器内逻辑编号**（通常都是 `0,1,2,3`），物理卡由 `devices:` 决定；写成物理编号会导致 `ASCEND_RT_VISIBLE_DEVICES ... invalid / aclInit 107001`。
+   `hosts/<host>/host.yaml` 只放列表型硬件差异（`/dev/davinci*` 等），prefill 与 decode 分别映射自己的卡，二者都保留 `davinci_manager`、`devmm_svm`、`hisi_hdc`；单实例模式用同一文件里的 `single:` 映射全部 8 卡。
+   映射子集时，`P_NPUS` / `D_NPUS` / `S_NPUS` 必须写**容器内逻辑编号**（通常都是 `0,1,2,3` 或 `0..7`），物理卡由 `devices:` 决定；写成物理编号会导致 `ASCEND_RT_VISIBLE_DEVICES ... invalid / aclInit 107001`。
 
 3. **单机 `network_mode: host`**
    容器直接使用宿主网络，端口不能重复；`BIND_IP` 决定监听地址。
@@ -213,6 +325,9 @@ VLLM_ASCEND_FETCH_PROXY=http://YOUR_PROXY:PORT
 
 5. **不要把真实配置提交进 git**
    `hosts/*`、`versions.env`、`*.secret.env` 已在 `.gitignore` 中。`git add -f` 会绕过它，注意不要手滑。
+
+6. **单实例的 Engram/PLE 吃宿主内存**
+   Qwen3.8-Flash-Next 的 51B n-gram 表通过 `--engram-config '{"cpu_offload":true}'` 放在宿主内存，机器至少预留 51 GB + 运行余量；`/dev/shm` 与宿主内存是两笔账，不要互相占用。单实例启动后 CPU 内存会明显上涨，属于正常现象。
 
 ## 推送前自检
 
@@ -233,18 +348,21 @@ git ls-files | grep -x versions.env && echo "versions.env 被跟踪！"
 
 | 现象 | 排查方向 |
 |---|---|
-| `make check` 报端口重复 | `P_PORT` / `D_PORT` / `ROUTER_PORT` / `METRICS_PORT` 必须互不相同 |
+| `make check` 报端口重复 | PD 模式看 `P_PORT` / `D_PORT` / `ROUTER_PORT` / `METRICS_PORT`；单实例看 `S_PORT` |
 | 容器起来但 `/health` 一直不通 | `make logs`；检查模型路径、显存利用率、capture 配置 |
 | router 没启动 | 它依赖两个引擎 healthy；先看 `make ps` 与引擎日志 |
+| 单实例起来后内存暴涨 | Engram/PLE 在 CPU offload，预留 51 GB 以上宿主内存；`free -h` 确认没有触发 OOM |
+| 单实例报 `SPEC_METHOD=dflash 需要 DRAFT` | 用模型自带 MTP 时改成 `SPEC_METHOD=qwen3_5_mtp` 并让 `DRAFT` 为空 |
 | decode 的池命中率始终为 0 | 确认 `mmc-shm` 同时挂载到 P/D，且 `kv-meta` 只有一份 |
 | `docker compose config` 报项目名非法 | 主机名含点号时用 Makefile 的封装，不要手敲 `-p` |
 | 长 prompt 并发上不去 | 看 decode 的 `vllm:kv_cache_usage_perc` 与 `request_queue_time_seconds` |
 
 ## 已知限制
 
-- 只覆盖单机 1P1D，不涉及多机调度与 Kubernetes
+- 覆盖单机 1P1D 与单机单实例，不涉及多机调度与 Kubernetes
 - 面向 Ascend（`--quantization ascend`、`davinci*`、HCCL、Mooncake/AscendStore），不是跨加速器的通用部署
 - `vllm-router` 0.1.17 的 Mooncake 模式要求 prefill 在 8998 提供 `/query` bootstrap，而 vllm-ascend 的 `MooncakeConnectorV1` 不提供，因此默认用 `shim/pd_proxy.py` 做 PD 编排；`router/Dockerfile` 保留给后续兼容版本
+- 单实例模式下没有 router，健康检查/端口/超时都直接落在 `single` 上；PD 专属的 `P_*` / `D_*` 配置会被忽略，`check.py` 也不会再要求它们
 - 通过 router 访问 Anthropic `/v1/messages` 的组合未在本骨架中验证，需要时请单独测试
 - 未附带 LICENSE，使用前请自行选择
 
@@ -255,3 +373,4 @@ git ls-files | grep -x versions.env && echo "versions.env 被跟踪！"
 - **真实的配置不进 git**：仓库只保留模板与逻辑，避免把地址、路径、密钥带进公开历史
 - **不做跨硬件抽象**：设备节点、连接器、镜像本来就是平台特有的，强行抽象只会让排错更难
 - **PD 编排用 shim 而不是 vllm-router**：后者的 Mooncake 实现与 vllm-ascend 的连接器不兼容；shim 直接使用 prefill 响应里的 `kv_transfer_params`，行为可预测
+- **单实例与 PD 共用一套编排**：用 compose profile 切换，避免维护两份 compose；参数仍然走 `COMMON_` / `S_` 约定，单实例不需要额外的启动脚本分支

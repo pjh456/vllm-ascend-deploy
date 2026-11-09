@@ -1,0 +1,13 @@
+{
+  "enable_cpu_binding": true,
+  "enable_shared_expert_dp": true,
+  "enable_fused_mc2": 0,
+  "enable_flashcomm1": true,
+  "multistream_overlap_shared_expert": true,
+  "ascend_compilation_config": {
+    "fuse_norm_quant": false,
+    "enable_npugraph_ex": true,
+    "enable_static_kernel": false,
+    "enable_super_kernel": false
+  }
+}

@@ -3,9 +3,16 @@ SHELL := /bin/bash
 HOST ?=
 UP_TIMEOUT ?= 1800
 STACK_DIR := $(CURDIR)
+
+# 部署模式从 hosts/<host>/.env 的 STACK_MODE 读取；命令行 MODE=... 可覆盖。
+#   pd     : Prefill / Decode 分离（默认）
+#   single : 单实例聚合，直接暴露 OpenAI API
+MODE ?= $(shell sed -n 's/^STACK_MODE=\([^ #]*\).*/\1/p' hosts/$(HOST)/.env 2>/dev/null | tail -n1)
+MODE := $(if $(strip $(MODE)),$(strip $(MODE)),pd)
+
 PROJECT := vllm-$(subst .,-,$(HOST))
 
-COMPOSE := STACK_DIR=$(STACK_DIR) docker compose -p $(PROJECT) \
+COMPOSE := STACK_DIR=$(STACK_DIR) docker compose -p $(PROJECT) --profile $(MODE) \
              --env-file versions.env \
              --env-file hosts/$(HOST)/.env \
              -f compose.yaml -f hosts/$(HOST)/host.yaml
@@ -16,7 +23,7 @@ guard:
 	@test -n "$(HOST)" || { echo "缺少 HOST，例如: make up HOST=1.2"; exit 1; }
 
 init: guard
-	@scripts/init.sh $(HOST)
+	@scripts/init.sh $(HOST) $(MODE)
 
 check: guard
 	@scripts/check.py $(HOST)
@@ -34,7 +41,7 @@ logs: guard
 ps: guard
 	@$(COMPOSE) ps
 
-SERVICE ?= prefill
+SERVICE ?= $(if $(filter single,$(MODE)),single,prefill)
 args: guard
 	@$(COMPOSE) run --rm --no-deps -e DRY_RUN=1 $(SERVICE)
 

@@ -2,7 +2,12 @@
 # 为指定主机生成 hosts/<host>/ 下的真实配置（全部被 .gitignore 忽略）
 set -euo pipefail
 
-HOST="${1:?用法: init.sh <host>}"
+HOST="${1:?用法: init.sh <host> [pd|single]}"
+MODE="${2:-pd}"
+case "$MODE" in
+  pd|single) ;;
+  *) echo "MODE 只能是 pd 或 single: $MODE" >&2; exit 1 ;;
+esac
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
@@ -22,12 +27,14 @@ cp hosts/.env.example "$DST/.env"
 cp hosts/host.yaml.example "$DST/host.yaml"
 
 for f in kv-p.json kv-d.json p-additional.json d-additional.json \
+         s-additional.json engram.json \
          mmc-local.conf mmc-meta.conf mooncake.json runtime.env; do
   cp "hosts/${f}.example" "$DST/${f}"
 done
 
 sed -i "s/__HOST__/${HOST}/g" "$DST/.env"
 sed -i "s/^COMPOSE_PROJECT_NAME=.*/COMPOSE_PROJECT_NAME=vllm-${HOST//./-}/" "$DST/.env"
+sed -i "s/^STACK_MODE=.*/STACK_MODE=${MODE}/" "$DST/.env"
 
-echo "created ${DST}"
+echo "created ${DST} (mode=${MODE})"
 echo "替换 ${DST}/.env 与同目录文件里的 __占位符__，然后执行: make check HOST=${HOST}"

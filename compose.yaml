@@ -33,8 +33,9 @@ x-engine: &engine
     - mmc-shm:/dev/shm
 
 services:
-  # ---- KV 元数据基础设施 ----
+  # ---- KV 元数据基础设施（仅 PD 模式）----
   kv-master:
+    profiles: ["pd"]
     image: ${VLLM_IMAGE}
     network_mode: host
     restart: unless-stopped
@@ -59,6 +60,7 @@ services:
       retries: 3
 
   kv-meta:
+    profiles: ["pd"]
     image: ${VLLM_IMAGE}
     network_mode: host
     restart: unless-stopped
@@ -76,9 +78,10 @@ services:
       timeout: 3s
       retries: 3
 
-  # ---- 推理引擎 ----
+  # ---- 推理引擎（PD 分离模式）----
   prefill:
     <<: *engine
+    profiles: ["pd"]
     entrypoint: ["/bin/bash", "/opt/vllm/engine/prefill.sh"]
     depends_on:
       kv-master:
@@ -99,6 +102,7 @@ services:
 
   decode:
     <<: *engine
+    profiles: ["pd"]
     entrypoint: ["/bin/bash", "/opt/vllm/engine/decode.sh"]
     depends_on:
       kv-master:
@@ -117,11 +121,31 @@ services:
       retries: 3
       start_period: ${HEALTH_MAX_WAIT:-30m}
 
-  # ---- PD 编排（shim）----
+  # ---- 单实例（聚合）模式 ----
+  # Prefill/Decode 在同一个 vLLM 进程内完成，直接暴露 OpenAI 兼容 API。
+  # 适用于模型或 KV 池放不进 1P1D 的场景（例如 Qwen3.8-Flash-Next 需要 TP8）。
+  single:
+    <<: *engine
+    profiles: ["single"]
+    entrypoint: ["/bin/bash", "/opt/vllm/engine/single.sh"]
+    env_file:
+      - env/common.env
+      - hosts/${HOST_ID}/runtime.env
+      - hosts/${HOST_ID}/.env
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:${S_PORT:-8088}/health >/dev/null || exit 1"]
+      interval: 5s
+      start_interval: 2s
+      timeout: 3s
+      retries: 3
+      start_period: ${HEALTH_MAX_WAIT:-30m}
+
+  # ---- PD 编排（shim，仅 PD 模式）----
   # vllm-router 0.1.17 的 Mooncake 模式要求 prefill 在 8998 提供 /query bootstrap，
   # 而 vllm-ascend 的 MooncakeConnectorV1 不提供；shim 直接转发 prefill 响应里的
   # kv_transfer_params，已在旧部署验证。
   router:
+    profiles: ["pd"]
     image: ${VLLM_IMAGE}
     network_mode: host
     restart: unless-stopped

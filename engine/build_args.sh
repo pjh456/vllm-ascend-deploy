@@ -25,8 +25,10 @@ declare -A ALIAS=(
   [ENABLE_EP]=enable-expert-parallel
 )
 
-# 去掉 P_/D_ 前缀后命中这些后缀的变量不生成参数
-SKIP_KEYS=" NPUS CAPTURE_MODE "
+# 去掉 P_/D_/S_ 前缀后命中这些后缀的变量不生成参数
+#   NPUS / CAPTURE_MODE / COMPILATION_CONFIG：由脚本自行拼装
+#   SPEC_*：给 single.sh 拼装 speculative-config 用
+SKIP_KEYS=" NPUS CAPTURE_MODE COMPILATION_CONFIG SPEC_TOKENS SPEC_METHOD SPEC_ENFORCE_EAGER "
 
 ARGS=()
 
@@ -59,6 +61,7 @@ build_args() {
   while IFS= read -r name; do
     [[ "$name" == COMMON_* ]] || continue
     suffix="${name#COMMON_}"
+    case " $SKIP_KEYS " in *" $suffix "*) continue ;; esac
     pkey="${prefix}_${suffix}"
     [[ -n "${!pkey:-}" ]] && continue
     _add "$suffix" "${!name}"

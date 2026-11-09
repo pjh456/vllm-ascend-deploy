@@ -11,6 +11,32 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PLACEHOLDER = re.compile(r"__[A-Z0-9_]+__")
 JSON_FILES = ("kv-p.json", "kv-d.json", "p-additional.json", "d-additional.json", "mooncake.json")
 PORT_KEYS = ("P_PORT", "D_PORT", "ROUTER_PORT", "METRICS_PORT")
+PD_ONLY_KEYS = {
+    "P_PORT", "D_PORT", "ROUTER_PORT",
+    "KV_CONNECTOR", "KV_BOOTSTRAP_PORT",
+    "ROUTER_PREFILL_POLICY", "ROUTER_DECODE_POLICY",
+}
+# 兼容老配置：这些键允许缺省
+OPTIONAL_KEYS = {"STACK_MODE", "SPEC_ENFORCE_EAGER"}
+
+
+def applicable(key: str, mode: str) -> bool:
+    """该配置键在当前部署模式下是否有意义。"""
+    if key in OPTIONAL_KEYS:
+        return False
+    if mode == "pd":
+        return not key.startswith("S_")
+    if key.startswith(("P_", "D_")):
+        return False
+    return key not in PD_ONLY_KEYS
+
+
+def effective_env(real: dict[str, str], prefix: str, suffix: str) -> str:
+    """与 engine/build_args.sh 的 effective() 保持一致。"""
+    for key in (f"{prefix}_{suffix}", f"COMMON_{suffix}", suffix):
+        if real.get(key):
+            return real[key]
+    return ""
 
 
 def parse_env(path: str) -> dict[str, str]:
@@ -43,11 +69,16 @@ def main() -> int:
     tmpl = parse_env(os.path.join(ROOT, "hosts", ".env.example"))
     real = parse_env(env_file)
 
-    missing = sorted(set(tmpl) - set(real))
+    mode = (real.get("STACK_MODE") or "pd").strip().lower()
+    if mode not in ("pd", "single"):
+        errors.append(f"STACK_MODE 只能是 pd 或 single: {mode}")
+        mode = "pd"
+
+    missing = sorted(k for k in set(tmpl) - set(real) if applicable(k, mode))
     if missing:
         errors.append(f".env 缺少键: {', '.join(missing)}")
 
-    unset = sorted(k for k, v in real.items() if "__" in v)
+    unset = sorted(k for k, v in real.items() if "__" in v and applicable(k, mode))
     if unset:
         errors.append(f".env 仍有占位符: {', '.join(unset)}")
 
@@ -66,7 +97,8 @@ def main() -> int:
             if missing_rt:
                 errors.append(f"runtime.env 缺少键: {', '.join(missing_rt)}")
 
-    ports = {k: real.get(k, "") for k in PORT_KEYS}
+    port_keys = ("S_PORT",) if mode == "single" else PORT_KEYS
+    ports = {k: real.get(k, "") for k in port_keys}
     if len(set(ports.values())) != len(ports):
         errors.append(f"端口重复: {ports}")
 
@@ -80,21 +112,29 @@ def main() -> int:
         if model_root and not path.startswith(model_root.rstrip(os.sep) + os.sep):
             errors.append(f"{key} 不在 MODEL_ROOT={model_root} 之下，容器内不可见")
 
+    required_json = set(JSON_FILES) if mode == "pd" else set()
+
     # @file 形式的参数值：容器内路径 /opt/vllm/... 映射回仓库根目录
     for key, value in real.items():
-        if not value.startswith("@"):
+        if not applicable(key, mode) or not value.startswith("@"):
             continue
         path = value[1:]
         if path.startswith("/opt/vllm/"):
             path = os.path.join(ROOT, path[len("/opt/vllm/"):])
         if not os.path.isfile(path):
             errors.append(f"{key} 指向的文件不存在: {value}")
+        elif path.endswith(".json") and os.path.basename(path) not in required_json:
+            try:
+                json.load(open(path, encoding="utf-8"))
+            except json.JSONDecodeError as exc:
+                errors.append(f"{key} 指向的 JSON 非法: {exc}")
 
-    for key in ("P_CAPTURE_MODE", "D_CAPTURE_MODE"):
+    capture_keys = ("S_CAPTURE_MODE",) if mode == "single" else ("P_CAPTURE_MODE", "D_CAPTURE_MODE")
+    for key in capture_keys:
         if not real.get(key):
             errors.append(f"{key} 未设置")
 
-    for name in JSON_FILES:
+    for name in required_json:
         path = os.path.join(conf, name)
         if not os.path.isfile(path):
             errors.append(f"缺少 {name}")
@@ -108,13 +148,14 @@ def main() -> int:
         except json.JSONDecodeError as exc:
             errors.append(f"{name} 不是合法 JSON: {exc}")
 
+    tp = int(real.get("COMMON_TP") or 0)
+
     kvp_path = os.path.join(conf, "kv-p.json")
-    if os.path.isfile(kvp_path):
+    if mode == "pd" and os.path.isfile(kvp_path):
         try:
             kvp = json.load(open(kvp_path, encoding="utf-8"))
             mc = kvp["kv_connector_extra_config"]["connectors"][0]
             extra = mc["kv_connector_extra_config"]
-            tp = int(real.get("COMMON_TP") or 0)
             for role in ("prefill", "decode"):
                 if int(extra[role]["tp_size"]) != tp:
                     errors.append(f"kv-p.json {role}.tp_size 与 TP={tp} 不一致")
@@ -127,18 +168,27 @@ def main() -> int:
             errors.append(f"kv-p.json 结构异常: {exc}")
 
     mmc_path = os.path.join(conf, "mmc-local.conf")
-    if os.path.isfile(mmc_path):
+    if mode == "pd" and os.path.isfile(mmc_path):
         match = re.search(r"world_size\s*=\s*(\d+)", open(mmc_path, encoding="utf-8").read())
         if not match:
             errors.append("mmc-local.conf 缺少 world_size")
         elif int(match.group(1)) < tp * 2:
             errors.append(f"mmc-local.conf world_size 小于 TP*2={tp * 2}")
 
+    if mode == "single":
+        host_yaml = os.path.join(conf, "host.yaml")
+        if not os.path.isfile(host_yaml):
+            errors.append("缺少 host.yaml")
+        elif not re.search(r"^  single:", open(host_yaml, encoding="utf-8").read(), re.M):
+            errors.append("host.yaml 缺少 single 服务的 devices 映射")
+
     if tp <= 0:
         errors.append("COMMON_TP 未设置")
 
-    step = int(real.get("SPEC_TOKENS") or 0) + 1
-    seqs = int(real.get("COMMON_MAX_NUM_SEQS") or 0)
+    spec = int(effective_env(real, "S" if mode == "single" else "P", "SPEC_TOKENS") or 0)
+    step = spec + 1
+    seqs = int(effective_env(real, "S" if mode == "single" else "P", "MAX_NUM_SEQS") or 0)
+    print(f"mode: {mode}")
     print(f"capture sizes: {step}..{step * seqs}，共 {seqs} 个（步长 {step}）")
 
     if errors:
