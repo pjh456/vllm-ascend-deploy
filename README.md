@@ -244,16 +244,16 @@ STACK_MODE=single
 VLLM_IMAGE=quay.io/ascend/vllm-ascend:v0.30.0-a2
 
 MODEL=/data/modelscope/models/Eco-Tech/Qwen3.8-Flash-Next-w4a8
-# 使用模型自带 MTP 头，不挂外部 draft
-DRAFT=
-SPEC_TOKENS=3
-SPEC_METHOD=qwen3_5_mtp
+# DFlash2 外部 draft；用模型自带 MTP 时改成 DRAFT= / SPEC_METHOD=qwen3_5_mtp / SPEC_TOKENS=3
+DRAFT=/data/modelscope/models/incoai/Qwen3.8-Flash-Next-DFlash2
+SPEC_TOKENS=6
+SPEC_METHOD=dflash
 SPEC_ENFORCE_EAGER=false
 
 COMMON_SERVED_NAME=qwen3.8-flash-next
 COMMON_TP=8
 COMMON_ENABLE_EP=true
-COMMON_MAX_MODEL_LEN=131072
+COMMON_MAX_MODEL_LEN=262144
 COMMON_ENABLE_PREFIX_CACHING=true
 COMMON_ASYNC_SCHEDULING=true
 COMMON_ENABLE_AUTO_TOOL_CHOICE=true
@@ -275,7 +275,7 @@ S_ADDITIONAL_CONFIG=@/opt/vllm/hosts/<host>/s-additional.json
 S_ENGRAM_CONFIG=@/opt/vllm/hosts/<host>/engram.json
 # MemCache KV 池（AscendStoreConnector kv_both）；不用池时置空
 S_KV_TRANSFER_CONFIG=@/opt/vllm/hosts/<host>/kv-single.json
-MMC_SHM_SIZE=128g
+MMC_SHM_SIZE=640g
 HEALTH_MAX_WAIT=60m
 STOP_GRACE=180s
 ```
@@ -290,7 +290,8 @@ VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS=3000
 要点：
 
 - **Engram/PLE**：`S_ENGRAM_CONFIG` 默认指向 `engram.json`，内容是 `{"cpu_offload": true, "dp_shared_memory": false}`。这个 w4a8 checkpoint 的 PLE 是 BF16，约 **95.4 GiB / 102.4 GB**（不是 51 GB；51 GB 是 FP8 版本的大小），`cpu_offload=true` 会把它 pin 在宿主内存，建议至少 128 GB 宿主内存并留出运行余量；不要把它设成 `cpu_offload=false`，NPU 显存放不下。P/D 各跑一个进程时会各占一份，做 PD 时宿主内存要按两份算。宿主内存不足时，Ascend 侧目前没有官方 `disk_offload` 方案，只能换 PLE 更小的权重版本。
-- **MTP**：`DRAFT` 留空，`SPEC_METHOD=qwen3_5_mtp`，`SPEC_TOKENS=3`；脚本会生成 `--speculative-config '{"method":"qwen3_5_mtp","num_speculative_tokens":3,"enforce_eager":false}'`。若仍写 `SPEC_METHOD=dflash` 又没给 `DRAFT`，`make args` 会直接报错。
+- **投机解码**：默认用 DFlash2 外部 draft（`DRAFT` 指向 `incoai/Qwen3.8-Flash-Next-DFlash2`，`SPEC_METHOD=dflash`，`SPEC_TOKENS=6`），脚本会生成 `--speculative-config '{"method":"dflash","model":"...","num_speculative_tokens":6}'`。想改用模型自带 MTP 头时，把 `DRAFT` 置空、`SPEC_METHOD=qwen3_5_mtp`、`SPEC_TOKENS=3`。`SPEC_METHOD=dflash` 但 `DRAFT` 为空时，`make args` 会直接报错。
+- **上下文**：`COMMON_MAX_MODEL_LEN=262144` 是模型原生上限，不需要 YaRN；如果 8 卡显存吃紧，先降 `S_MAX_NUM_SEQS`，再考虑降上下文。
 - **前缀缓存**：Qwen3.8-Flash-Next 上仍是实验特性。启用 `--enable-prefix-caching` 时必须同时 `--mamba-cache-mode align`，并按实际上下文长度/并发重新验证 NPU 显存。
 - **additional-config**：`s-additional.json.example` 是 A2/A3 单实例模板（shared expert DP、FlashComm1、CPU 绑定、关闭 fused MC2 等）；A3 可把 `enable_static_kernel` 改为 `true`。
 - **KV 池**：`S_KV_TRANSFER_CONFIG` 指向 `kv-single.json`，内容是官方 KV Cache Pool 的 PD-Mixed 用法：`AscendStoreConnector` + `kv_role=kv_both` + `backend=memcache`。单实例会额外启动 `kv-meta`（MetaService），`mmc-local.conf` 的 `world_size` 不小于 TP，池大小约为 `rank 数 × dram.size`（例如 8 × 64GB = 512GB）。不需要池时把 `S_KV_TRANSFER_CONFIG` 置空。
