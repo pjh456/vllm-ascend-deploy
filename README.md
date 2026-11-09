@@ -223,6 +223,18 @@ make up HOST=qwen38        # 176B 模型可加 UP_TIMEOUT=3600
 
 Qwen3.8-Flash-Next 是 125B 骨干 + 51B Engram（PLE）表的 MoE 模型，单实例 TP8 才放得下，因此不适合 1P1D。Ascend 侧建议使用与硬件匹配的镜像（A2 用通用 `v0.30.0-a2`，A3 可用 `qwen3.8-next-a3` / `v0.30.0-a3`）；镜像可以在单个主机的 `.env` 里覆盖：
 
+### 为什么 32G×8 不适合 PD
+
+以 `Eco-Tech/Qwen3.8-Flash-Next-w4a8` 为例：
+
+- 整个 checkpoint 约 **180.9 GiB**；
+- Engram/PLE 在这个 checkpoint 里是 **BF16**（128 个 shard × `[2,500,012, 160]`），约 **95.4 GiB**；
+- 扣掉 Engram 后的骨干 + vision + MTP 约 **85.5 GiB**。
+
+PD 分离意味着 P 和 D 各自加载一份完整骨干，并且各自把一份 Engram 放在宿主内存。4+4 分卡时每边只有 4×32=128 GB，扣掉约 91.8 GB 权重后只剩约 36 GB 给 KV/激活/图；宿主内存也要准备两份 ~95.4 GiB。Ascend 官方 Qwen3.8-Flash-Next PD 示例用的是 **A2 两台 8 卡机（每角色 8 卡）**，A3 用 16 卡，没有 4+4 的验证配置。
+
+所以 32G×8 的建议是：**单实例 TP8 跑 `STACK_MODE=single`；要 PD 至少准备两台 8 卡机器。** 单实例下非 Engram 权重 TP8 后每卡约 10.7 GiB，剩余显存足够放 KV/激活；Engram 不占 NPU，但宿主内存按 ~96 GiB + 余量准备（建议 128 GB 以上，最好 256 GB）。
+
 ```bash
 # hosts/<host>/.env
 STACK_MODE=single
@@ -273,7 +285,7 @@ VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS=3000
 
 要点：
 
-- **Engram/PLE**：`S_ENGRAM_CONFIG` 默认指向 `engram.json`，内容是 `{"cpu_offload": true, "dp_shared_memory": false}`。51B 的 n-gram 表放宿主内存，机器至少预留 **51 GB + 运行余量**；不要把它设成 `cpu_offload=false`，NPU 显存放不下。
+- **Engram/PLE**：`S_ENGRAM_CONFIG` 默认指向 `engram.json`，内容是 `{"cpu_offload": true, "dp_shared_memory": false}`。这个 w4a8 checkpoint 的 PLE 是 BF16，约 **95.4 GiB / 102.4 GB**（不是 51 GB；51 GB 是 FP8 版本的大小），`cpu_offload=true` 会把它 pin 在宿主内存，建议至少 128 GB 宿主内存并留出运行余量；不要把它设成 `cpu_offload=false`，NPU 显存放不下。P/D 各跑一个进程时会各占一份，做 PD 时宿主内存要按两份算。宿主内存不足时，Ascend 侧目前没有官方 `disk_offload` 方案，只能换 PLE 更小的权重版本。
 - **MTP**：`DRAFT` 留空，`SPEC_METHOD=qwen3_5_mtp`，`SPEC_TOKENS=3`；脚本会生成 `--speculative-config '{"method":"qwen3_5_mtp","num_speculative_tokens":3,"enforce_eager":false}'`。若仍写 `SPEC_METHOD=dflash` 又没给 `DRAFT`，`make args` 会直接报错。
 - **前缀缓存**：Qwen3.8-Flash-Next 上仍是实验特性。启用 `--enable-prefix-caching` 时必须同时 `--mamba-cache-mode align`，并按实际上下文长度/并发重新验证 NPU 显存。
 - **additional-config**：`s-additional.json.example` 是 A2/A3 单实例模板（shared expert DP、FlashComm1、CPU 绑定、关闭 fused MC2 等）；A3 可把 `enable_static_kernel` 改为 `true`。
@@ -327,7 +339,7 @@ VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS=3000
    `hosts/*`、`versions.env`、`*.secret.env` 已在 `.gitignore` 中。`git add -f` 会绕过它，注意不要手滑。
 
 6. **单实例的 Engram/PLE 吃宿主内存**
-   Qwen3.8-Flash-Next 的 51B n-gram 表通过 `--engram-config '{"cpu_offload":true}'` 放在宿主内存，机器至少预留 51 GB + 运行余量；`/dev/shm` 与宿主内存是两笔账，不要互相占用。单实例启动后 CPU 内存会明显上涨，属于正常现象。
+   Qwen3.8-Flash-Next 的 51B n-gram 表在这个 w4a8 checkpoint 里是 BF16，约 95.4 GiB，通过 `--engram-config '{"cpu_offload":true}'` 放在宿主内存；机器至少预留 95.4 GiB + 运行余量（建议 128 GB 以上宿主内存）。`/dev/shm` 与宿主内存是两笔账，不要互相占用。单实例启动后 CPU 内存会明显上涨，属于正常现象。
 
 ## 推送前自检
 
@@ -351,7 +363,7 @@ git ls-files | grep -x versions.env && echo "versions.env 被跟踪！"
 | `make check` 报端口重复 | PD 模式看 `P_PORT` / `D_PORT` / `ROUTER_PORT` / `METRICS_PORT`；单实例看 `S_PORT` |
 | 容器起来但 `/health` 一直不通 | `make logs`；检查模型路径、显存利用率、capture 配置 |
 | router 没启动 | 它依赖两个引擎 healthy；先看 `make ps` 与引擎日志 |
-| 单实例起来后内存暴涨 | Engram/PLE 在 CPU offload，预留 51 GB 以上宿主内存；`free -h` 确认没有触发 OOM |
+| 单实例起来后内存暴涨 | Engram/PLE 在 CPU offload，这个 w4a8 checkpoint 的 BF16 表约 95.4 GiB，宿主内存至少 128 GB；`free -h` 确认没有触发 OOM |
 | 单实例报 `SPEC_METHOD=dflash 需要 DRAFT` | 用模型自带 MTP 时改成 `SPEC_METHOD=qwen3_5_mtp` 并让 `DRAFT` 为空 |
 | decode 的池命中率始终为 0 | 确认 `mmc-shm` 同时挂载到 P/D，且 `kv-meta` 只有一份 |
 | `docker compose config` 报项目名非法 | 主机名含点号时用 Makefile 的封装，不要手敲 `-p` |
