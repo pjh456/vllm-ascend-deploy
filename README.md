@@ -293,7 +293,7 @@ VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS=3000
 - **投机解码**：默认用 DFlash2 外部 draft（`DRAFT` 指向 `incoai/Qwen3.8-Flash-Next-DFlash2`，`SPEC_METHOD=dflash`，`SPEC_TOKENS=6`），脚本会生成 `--speculative-config '{"method":"dflash","model":"...","num_speculative_tokens":6}'`。想改用模型自带 MTP 头时，把 `DRAFT` 置空、`SPEC_METHOD=qwen3_5_mtp`、`SPEC_TOKENS=3`。`SPEC_METHOD=dflash` 但 `DRAFT` 为空时，`make args` 会直接报错。
 - **上下文**：`COMMON_MAX_MODEL_LEN=262144` 是模型原生上限，不需要 YaRN；如果 8 卡显存吃紧，先降 `S_MAX_NUM_SEQS`，再考虑降上下文。
 - **前缀缓存**：Qwen3.8-Flash-Next 上仍是实验特性。启用 `--enable-prefix-caching` 时必须同时 `--mamba-cache-mode align`，并按实际上下文长度/并发重新验证 NPU 显存。
-- **additional-config**：`s-additional.json.example` 是 A2/A3 单实例模板（shared expert DP、FlashComm1、CPU 绑定、关闭 fused MC2 等）；A3 可把 `enable_static_kernel` 改为 `true`。
+- **additional-config**：`s-additional.json.example` 是 A2/A3 单实例模板（shared expert DP、FlashComm1、CPU 绑定、关闭 fused MC2 等）；A3 可把 `enable_static_kernel` 改为 `true`。注意：当前 vLLM 0.32 的 `Qwen4Exp HC` **不支持 sequence-parallel MoE**，而 Ascend 上 `enable_flashcomm1` 就是 SP MoE 开关；`TP8 + EP` 时必须保持 `enable_flashcomm1: false`，否则会报 `Qwen4Exp HC does not support sequence-parallel MoE`。等后续 vllm-ascend 支持 Qwen4Exp 的 SP 后再开。
 - **KV 池**：`S_KV_TRANSFER_CONFIG` 指向 `kv-single.json`，内容是官方 KV Cache Pool 的 PD-Mixed 用法：`AscendStoreConnector` + `kv_role=kv_both` + `backend=memcache`。单实例会额外启动 `kv-meta`（MetaService），`mmc-local.conf` 的 `world_size` 不小于 TP，池大小约为 `rank 数 × dram.size`（例如 8 × 64GB = 512GB）。不需要池时把 `S_KV_TRANSFER_CONFIG` 置空。
 - **/dev/shm**：单实例仍复用 `mmc-shm`。启用 KV 池时按池大小留足（例如 512GB 池配 `MMC_SHM_SIZE=640g`）；不启用池时 `128g` 左右即可。tmpfs 只按实际写入计费，上限大不会直接占内存。
 - **镜像与版本**：Qwen3.8-Flash-Next 需要 vllm-ascend `v0.26.0rc` 以上，推荐 `v0.32.0rc`；不要拿跑 Qwen3.6/3.8-27B 的旧镜像直接启动。
