@@ -60,7 +60,8 @@ services:
       retries: 3
 
   kv-meta:
-    profiles: ["pd"]
+    # MemCache MetaService：PD 模式和启用 KV 池的单实例模式都需要
+    profiles: ["pd", "single"]
     image: ${VLLM_IMAGE}
     network_mode: host
     restart: unless-stopped
@@ -128,6 +129,9 @@ services:
     <<: *engine
     profiles: ["single"]
     entrypoint: ["/bin/bash", "/opt/vllm/engine/single.sh"]
+    depends_on:
+      kv-meta:
+        condition: service_healthy
     env_file:
       - env/common.env
       - hosts/${HOST_ID}/runtime.env

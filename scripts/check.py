@@ -39,6 +39,14 @@ def effective_env(real: dict[str, str], prefix: str, suffix: str) -> str:
     return ""
 
 
+def localize(value: str) -> str:
+    """把容器内 /opt/vllm/... 路径映射回仓库根目录。"""
+    path = value[1:] if value.startswith("@") else value
+    if path.startswith("/opt/vllm/"):
+        path = os.path.join(ROOT, path[len("/opt/vllm/"):])
+    return path
+
+
 def parse_env(path: str) -> dict[str, str]:
     out: dict[str, str] = {}
     with open(path, encoding="utf-8") as fh:
@@ -118,9 +126,7 @@ def main() -> int:
     for key, value in real.items():
         if not applicable(key, mode) or not value.startswith("@"):
             continue
-        path = value[1:]
-        if path.startswith("/opt/vllm/"):
-            path = os.path.join(ROOT, path[len("/opt/vllm/"):])
+        path = localize(value)
         if not os.path.isfile(path):
             errors.append(f"{key} 指向的文件不存在: {value}")
         elif path.endswith(".json") and os.path.basename(path) not in required_json:
@@ -174,6 +180,25 @@ def main() -> int:
             errors.append("mmc-local.conf 缺少 world_size")
         elif int(match.group(1)) < tp * 2:
             errors.append(f"mmc-local.conf world_size 小于 TP*2={tp * 2}")
+
+    if mode == "single" and real.get("S_KV_TRANSFER_CONFIG"):
+        for name in ("mmc-local.conf", "mmc-meta.conf"):
+            if not os.path.isfile(os.path.join(conf, name)):
+                errors.append(f"启用 KV 池时缺少 {name}")
+        kv_path = localize(real["S_KV_TRANSFER_CONFIG"])
+        if os.path.isfile(kv_path):
+            try:
+                kv = json.load(open(kv_path, encoding="utf-8"))
+                if kv.get("kv_connector") != "AscendStoreConnector" or kv.get("kv_role") != "kv_both":
+                    errors.append("kv-single.json 应为 AscendStoreConnector + kv_role=kv_both")
+            except json.JSONDecodeError:
+                pass  # 语法错误已在上面的 @ 循环报告
+        if os.path.isfile(mmc_path):
+            match = re.search(r"world_size\s*=\s*(\d+)", open(mmc_path, encoding="utf-8").read())
+            if not match:
+                errors.append("mmc-local.conf 缺少 world_size")
+            elif int(match.group(1)) < tp:
+                errors.append(f"mmc-local.conf world_size 小于 TP={tp}")
 
     if mode == "single":
         host_yaml = os.path.join(conf, "host.yaml")

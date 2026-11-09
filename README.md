@@ -54,7 +54,7 @@
                  └────────────────────────────┘
 ```
 
-单实例模式不启动 Mooncake、MemCache 与 PD shim 容器；`/dev/shm` 仍由 `mmc-shm` 提供（tmpfs 上限由 `MMC_SHM_SIZE` 控制，按实际需要写即可）。
+单实例模式不启动 Mooncake master 与 PD shim 容器；启用 KV 池时会启动 MemCache MetaService（`kv-meta`）。`/dev/shm` 仍由 `mmc-shm` 提供（tmpfs 上限由 `MMC_SHM_SIZE` 控制，按实际需要写即可）。
 
 ## 前置条件
 
@@ -134,6 +134,7 @@ make logs HOST=node1
     ├── d-additional.json.example
     ├── s-additional.json.example # 单实例 additional-config 模板
     ├── engram.json.example      # 单实例 Engram/PLE 模板
+    ├── kv-single.json.example   # 单实例 MemCache KV 池（kv_both）模板
     ├── mmc-local.conf.example
     └── mmc-meta.conf.example
 ```
@@ -178,6 +179,7 @@ VLLM_ASCEND_FETCH_PROXY=http://YOUR_PROXY:PORT
 | `COMMON_ENABLE_PREFIX_CACHING=false` | 不添加 |
 | `P_KV_TRANSFER_CONFIG=@/opt/vllm/hosts/<host>/kv-p.json` | 参数值从文件读取（JSON） |
 | `S_ENGRAM_CONFIG=@/opt/vllm/hosts/<host>/engram.json` | 读成 `--engram-config '<json>'` |
+| `S_KV_TRANSFER_CONFIG=@/opt/vllm/hosts/<host>/kv-single.json` | 读成 `--kv-transfer-config '<json>'` |
 
 - 大写转小写、下划线转连字符
 - `P_` / `D_` / `S_` 同名键会覆盖 `COMMON_` 键
@@ -215,7 +217,7 @@ make up HOST=qwen38        # 176B 模型可加 UP_TIMEOUT=3600
 |---|---|---|
 | 入口 | `router:8080` | `single:8088`（由 `S_PORT` 决定） |
 | 推理进程 | prefill + decode | 一个 vLLM（prefill/decode 聚合） |
-| KV 基础设施 | mooncake + memcache | 不需要 |
+| KV 基础设施 | mooncake + memcache | 可选：MemCache MetaService（`kv_both`） |
 | NPU | P/D 各一组 | `S_NPUS` 指定，通常 8 卡 |
 | 参数前缀 | `P_` / `D_` | `S_`（覆盖 `COMMON_`） |
 
@@ -271,6 +273,8 @@ S_MAMBA_CACHE_MODE=align
 S_TRUST_REMOTE_CODE=true
 S_ADDITIONAL_CONFIG=@/opt/vllm/hosts/<host>/s-additional.json
 S_ENGRAM_CONFIG=@/opt/vllm/hosts/<host>/engram.json
+# MemCache KV 池（AscendStoreConnector kv_both）；不用池时置空
+S_KV_TRANSFER_CONFIG=@/opt/vllm/hosts/<host>/kv-single.json
 MMC_SHM_SIZE=128g
 HEALTH_MAX_WAIT=60m
 STOP_GRACE=180s
@@ -289,7 +293,8 @@ VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS=3000
 - **MTP**：`DRAFT` 留空，`SPEC_METHOD=qwen3_5_mtp`，`SPEC_TOKENS=3`；脚本会生成 `--speculative-config '{"method":"qwen3_5_mtp","num_speculative_tokens":3,"enforce_eager":false}'`。若仍写 `SPEC_METHOD=dflash` 又没给 `DRAFT`，`make args` 会直接报错。
 - **前缀缓存**：Qwen3.8-Flash-Next 上仍是实验特性。启用 `--enable-prefix-caching` 时必须同时 `--mamba-cache-mode align`，并按实际上下文长度/并发重新验证 NPU 显存。
 - **additional-config**：`s-additional.json.example` 是 A2/A3 单实例模板（shared expert DP、FlashComm1、CPU 绑定、关闭 fused MC2 等）；A3 可把 `enable_static_kernel` 改为 `true`。
-- **/dev/shm**：单实例仍复用 `mmc-shm`，把 `MMC_SHM_SIZE` 改成 `128g` 左右即可；tmpfs 只按实际写入计费，上限大不会直接占内存。
+- **KV 池**：`S_KV_TRANSFER_CONFIG` 指向 `kv-single.json`，内容是官方 KV Cache Pool 的 PD-Mixed 用法：`AscendStoreConnector` + `kv_role=kv_both` + `backend=memcache`。单实例会额外启动 `kv-meta`（MetaService），`mmc-local.conf` 的 `world_size` 不小于 TP，池大小约为 `rank 数 × dram.size`（例如 8 × 64GB = 512GB）。不需要池时把 `S_KV_TRANSFER_CONFIG` 置空。
+- **/dev/shm**：单实例仍复用 `mmc-shm`。启用 KV 池时按池大小留足（例如 512GB 池配 `MMC_SHM_SIZE=640g`）；不启用池时 `128g` 左右即可。tmpfs 只按实际写入计费，上限大不会直接占内存。
 - **镜像与版本**：Qwen3.8-Flash-Next 需要 vllm-ascend `v0.26.0rc` 以上，推荐 `v0.32.0rc`；不要拿跑 Qwen3.6/3.8-27B 的旧镜像直接启动。
 
 ## 常用命令
@@ -310,7 +315,7 @@ VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS=3000
 ## 启动与关闭语义
 
 - 引擎服务（prefill / decode / single）`restart: "no"`：崩溃就停住，不会无限重启；需要开机自启时用 `systemd/vllm-stack@.service`
-- 基础设施与 router `restart: unless-stopped`：秒级启动，可独立重启；单实例模式不启动它们
+- 基础设施与 router `restart: unless-stopped`：秒级启动，可独立重启；单实例模式不启动 router 与 Mooncake master，启用 KV 池时仍启动 `kv-meta`
 - 引擎脚本以 `exec vllm serve ...` 结尾，容器 `PID 1` 就是 vLLM，`docker stop` 直接发给它
 - `stop_grace_period` 建议不小于 vLLM 的退出时间（默认 120s）
 - 健康检查：
@@ -323,7 +328,7 @@ VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS=3000
 
 1. **KV 池依赖共享的 `/dev/shm`**
    `compose.yaml` 声明了一个 tmpfs 卷 `mmc-shm`，同时挂到 prefill 和 decode 的 `/dev/shm`。如果 P/D 各自使用独立的 `/dev/shm`，decode 将无法命中 prefill 写入池中的 segment。
-   池大小 = rank 数 × `mmc-local.conf` 里的 `dram.size`，请让 `MMC_SHM_SIZE` 留出余量。
+   池大小 = rank 数 × `mmc-local.conf` 里的 `dram.size`，请让 `MMC_SHM_SIZE` 留出余量。单实例启用 KV 池时同理：8 卡 TP8 就是 8 × `dram.size`。
 
 2. **设备节点按服务划分**
    `hosts/<host>/host.yaml` 只放列表型硬件差异（`/dev/davinci*` 等），prefill 与 decode 分别映射自己的卡，二者都保留 `davinci_manager`、`devmm_svm`、`hisi_hdc`；单实例模式用同一文件里的 `single:` 映射全部 8 卡。
@@ -365,6 +370,7 @@ git ls-files | grep -x versions.env && echo "versions.env 被跟踪！"
 | router 没启动 | 它依赖两个引擎 healthy；先看 `make ps` 与引擎日志 |
 | 单实例起来后内存暴涨 | Engram/PLE 在 CPU offload，这个 w4a8 checkpoint 的 BF16 表约 95.4 GiB，宿主内存至少 128 GB；`free -h` 确认没有触发 OOM |
 | 单实例报 `SPEC_METHOD=dflash 需要 DRAFT` | 用模型自带 MTP 时改成 `SPEC_METHOD=qwen3_5_mtp` 并让 `DRAFT` 为空 |
+| 单实例 KV 池没生效 | 确认 `S_KV_TRANSFER_CONFIG` 非空、`kv-meta` 健康、`mmc-local.conf` 的 `world_size` ≥ TP |
 | decode 的池命中率始终为 0 | 确认 `mmc-shm` 同时挂载到 P/D，且 `kv-meta` 只有一份 |
 | `docker compose config` 报项目名非法 | 主机名含点号时用 Makefile 的封装，不要手敲 `-p` |
 | 长 prompt 并发上不去 | 看 decode 的 `vllm:kv_cache_usage_perc` 与 `request_queue_time_seconds` |
