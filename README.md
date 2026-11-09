@@ -49,7 +49,7 @@
                               │
                               ▼
                  ┌────────────────────────────┐
-                 │ single :8088               │  一个 vLLM 进程
+                 │ single :8080               │  一个 vLLM 进程
                  │ NPU 0-7, TP8               │  prefill + decode 聚合
                  └────────────────────────────┘
 ```
@@ -174,7 +174,7 @@ VLLM_ASCEND_FETCH_PROXY=http://YOUR_PROXY:PORT
 | `COMMON_MAX_MODEL_LEN=262144` | `--max-model-len 262144`（P/D/单实例共享） |
 | `P_GPU_MEMORY_UTILIZATION=0.85` | `--gpu-memory-utilization 0.85`（仅 prefill） |
 | `D_MAX_NUM_BATCHED_TOKENS=1536` | `--max-num-batched-tokens 1536`（仅 decode） |
-| `S_PORT=8088` | `--port 8088`（仅单实例，同时也是对外端口） |
+| `S_PORT=8080` | `--port 8080`（仅单实例，同时也是对外端口） |
 | `COMMON_ENABLE_PREFIX_CACHING=true` | `--enable-prefix-caching`（裸 flag） |
 | `COMMON_ENABLE_PREFIX_CACHING=false` | 不添加 |
 | `P_KV_TRANSFER_CONFIG=@/opt/vllm/hosts/<host>/kv-p.json` | 参数值从文件读取（JSON） |
@@ -215,7 +215,7 @@ make up HOST=qwen38        # 176B 模型可加 UP_TIMEOUT=3600
 
 | 项目 | pd | single |
 |---|---|---|
-| 入口 | `router:8080` | `single:8088`（由 `S_PORT` 决定） |
+| 入口 | `router:8080` | `single:8080`（由 `S_PORT` 决定；单实例不启动 router，不会冲突） |
 | 推理进程 | prefill + decode | 一个 vLLM（prefill/decode 聚合） |
 | KV 基础设施 | mooncake + memcache | 可选：MemCache MetaService（`kv_both`） |
 | NPU | P/D 各一组 | `S_NPUS` 指定，通常 8 卡 |
@@ -250,7 +250,7 @@ SPEC_TOKENS=6
 SPEC_METHOD=dflash
 SPEC_ENFORCE_EAGER=false
 
-COMMON_SERVED_NAME=qwen3.8-flash-next
+COMMON_SERVED_NAME=qfn
 COMMON_TP=8
 COMMON_ENABLE_EP=true
 COMMON_MAX_MODEL_LEN=262144
@@ -263,7 +263,7 @@ COMMON_QUANTIZATION=ascend
 # 留空表示不传 --prefix-cache-retention-interval
 COMMON_PREFIX_RETENTION=
 
-S_PORT=8088
+S_PORT=8080
 S_NPUS=0,1,2,3,4,5,6,7
 S_GPU_MEMORY_UTILIZATION=0.93
 S_MAX_NUM_SEQS=32
