@@ -1,43 +1,84 @@
 #!/usr/bin/env python3
 """Summarize an Ascend torch_npu profiler trace: where did the time go?
 
-torch_npu writes one directory per rank under ``torch_profiler_dir``, each
-containing ``*_ascend_pt/ASCEND_PROFILER_OUTPUT`` with msprof CSV exports.
-This prints the operators sorted by total NPU time, plus the communication
-operators on their own, which is what "decode is slow" usually boils down
-to.  Stdlib only.
+torch_npu writes one ``*_ascend_pt`` directory per rank under
+``torch_profiler_dir``; inside it msprof keeps the raw ``PROF_*`` data and,
+once exported, ``mindstudio_profiler_output/*.csv``.
+
+    trace_top.py <trace_dir>                 # analyze existing CSVs
+    trace_top.py <trace_dir> --export        # run `msprof --export` first
+                                             # (needs CANN env, so run it
+                                             # inside the engine container)
+
+``--export`` picks the newest rank and prints the operators ranked by total
+NPU time, with collective communication reported separately -- which is what
+"decode is slow" usually boils down to.  Stdlib only.
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
+import glob
 import os
+import subprocess
 import sys
 from collections import defaultdict
 
-CANDIDATES = (
-    "op_statistic.csv",
-    "kernel_details.csv",
-    os.path.join("ASCEND_PROFILER_OUTPUT", "op_statistic.csv"),
-    os.path.join("ASCEND_PROFILER_OUTPUT", "kernel_details.csv"),
+CSV_PATTERNS = ("op_statistic*.csv", "kernel_details*.csv")
+NAME_COLUMNS = ("OP Type", "op_type", "Name", "op_name", "Kernel Name", "name")
+TOTAL_COLUMNS = ("Total Time(us)", "total_time(us)", "Total Time(us)", "total_time_us", "Duration(us)")
+COUNT_COLUMNS = ("Count", "count", "Occurrences", "op_count")
+COMM_HINTS = (
+    "hccl",
+    "hcom",
+    "allreduce",
+    "alltoall",
+    "allgather",
+    "all_gather",
+    "reducescatter",
+    "reduce_scatter",
+    "broadcast",
+    "matmulallreduce",
 )
-
-NAME_COLUMNS = ("op_type", "Name", "op_name", "Kernel Name", "name")
-TOTAL_COLUMNS = ("total_time(us)", "Total Time(us)", "total_time_us", "Duration(us)", "duration")
-COUNT_COLUMNS = ("count", "Count", "Occurrences", "op_count")
-COMM_HINTS = ("hccl", "allreduce", "allreduce", "alltoall", "allgather", "all_gather", "reducescatter", "broadcast", "matmulallreduce")
 
 
 def find_csvs(root: str) -> list[str]:
     found: list[str] = []
-    for base, _dirs, files in os.walk(root):
-        for name in files:
-            if name in ("op_statistic.csv", "kernel_details.csv"):
-                found.append(os.path.join(base, name))
-    # Prefer aggregated op statistics over per-launch kernel rows.
-    found.sort(key=lambda p: (os.path.basename(p) != "op_statistic.csv", p))
+    for pattern in CSV_PATTERNS:
+        found.extend(glob.glob(os.path.join(root, "**", pattern), recursive=True))
     return found
+
+
+def export_newest(root: str) -> str | None:
+    """Export the newest rank's raw PROF data and return the CSV directory."""
+    ranks = sorted(
+        glob.glob(os.path.join(root, "*_ascend_pt")),
+        key=os.path.getmtime,
+        reverse=True,
+    )
+    if not ranks:
+        print(f"{root}: 没有找到 *_ascend_pt 目录", file=sys.stderr)
+        return None
+    rank = ranks[0]
+    profs = sorted(glob.glob(os.path.join(rank, "PROF_*")), key=os.path.getmtime, reverse=True)
+    if not profs:
+        print(f"{rank}: 没有找到 PROF_* 目录", file=sys.stderr)
+        return None
+    prof = profs[0]
+    print(f"[trace] 导出 {os.path.basename(rank)} ...")
+    done = subprocess.run(
+        ["msprof", "--export=on", f"--output={prof}"],
+        cwd=rank,
+        capture_output=True,
+        text=True,
+    )
+    if done.returncode != 0:
+        print(done.stdout[-2000:], file=sys.stderr)
+        print(done.stderr[-2000:], file=sys.stderr)
+        print("[trace] msprof --export 失败", file=sys.stderr)
+        return None
+    return os.path.join(prof, "mindstudio_profiler_output")
 
 
 def pick(header: list[str], options: tuple[str, ...]) -> str | None:
@@ -68,7 +109,6 @@ def summarize(path: str, top: int) -> int:
                 value = float(row.get(total_col) or 0.0)
             except ValueError:
                 continue
-            # kernel_details rows are per launch; op rows carry their own count.
             name = (row.get(name_col) or "?").strip()
             totals[name] += value
             if count_col:
@@ -84,42 +124,47 @@ def summarize(path: str, top: int) -> int:
         return 1
 
     grand = sum(totals.values())
-    print(f"== {path}")
+    print(f"== {os.path.basename(path)}")
     print(f"== 总耗时 {grand / 1e3:.1f} ms（{len(counts)} 个算子）")
-    print(f"{'算子':<58}{'总毫秒':>10}{'占比':>8}{'次数':>8}{'均次us':>10}")
+    print(f"{'operator':<52}{'total_ms':>10}{'pct':>8}{'count':>8}{'avg_us':>9}")
     for name, value in sorted(totals.items(), key=lambda kv: kv[1], reverse=True)[:top]:
         count = counts[name]
         print(
-            f"{name[:57]:<58}{value / 1e3:>10.1f}{100 * value / grand:>7.1f}%"
-            f"{count:>8}{value / max(count, 1):>10.0f}"
+            f"{name[:51]:<52}{value / 1e3:>10.1f}{100 * value / grand:>7.1f}%"
+            f"{count:>8}{value / max(count, 1):>9.0f}"
         )
 
     comm = {n: v for n, v in totals.items() if any(h in n.lower() for h in COMM_HINTS)}
     if comm:
         comm_total = sum(comm.values())
-        print(f"\n== 集合通信合计 {comm_total / 1e3:.1f} ms（{100 * comm_total / grand:.1f}%）")
+        print(f"\n== collective comm {comm_total / 1e3:.1f} ms（{100 * comm_total / grand:.1f}%）")
         for name, value in sorted(comm.items(), key=lambda kv: kv[1], reverse=True)[:10]:
-            print(f"{name[:57]:<58}{value / 1e3:>10.1f}{100 * value / grand:>7.1f}%")
+            print(f"{name[:51]:<52}{value / 1e3:>10.1f}{100 * value / grand:>7.1f}%")
     return 0
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("trace_dir", help="perf.sh profile 打印的 trace 目录")
+    parser.add_argument("--export", action="store_true", help="先跑 msprof --export 再分析")
     parser.add_argument("--top", type=int, default=25)
     args = parser.parse_args()
 
     if not os.path.isdir(args.trace_dir):
         print(f"目录不存在: {args.trace_dir}", file=sys.stderr)
         return 1
+
     csvs = find_csvs(args.trace_dir)
+    if not csvs and args.export:
+        exported = export_newest(args.trace_dir)
+        if exported:
+            csvs = find_csvs(exported)
     if not csvs:
-        print(f"{args.trace_dir} 下没有 op_statistic.csv / kernel_details.csv", file=sys.stderr)
-        print("提示：torch_npu 还在导出时等一会儿；或检查 profiler.json 的 export_type", file=sys.stderr)
+        print(f"{args.trace_dir} 下没有 op_statistic*.csv / kernel_details*.csv", file=sys.stderr)
+        print("提示：加 --export 让 msprof 先导出；导出要在容器里跑（需要 CANN 环境）", file=sys.stderr)
         return 1
-    # One rank is enough to see the shape of the step; prefer the aggregated
-    # op statistics over per-launch kernel rows.
-    aggregated = [p for p in csvs if os.path.basename(p) == "op_statistic.csv"]
+
+    aggregated = [p for p in csvs if os.path.basename(p).startswith("op_statistic")]
     return summarize((aggregated or csvs)[0], args.top)
 
 

@@ -51,12 +51,18 @@ need_container() {
   container_running || { echo "容器 $CONTAINER 未运行" >&2; exit 1; }
 }
 
-trace_dir_host() {
-  local json="$STACK_DIR/hosts/$HOST/profiler.json" inner cache
-  inner=/root/.cache/vllm-profiles
+trace_dir_container() {
+  local json="$STACK_DIR/hosts/$HOST/profiler.json"
   if [[ -f "$json" ]]; then
-    inner=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("torch_profiler_dir") or "/root/.cache/vllm-profiles")' "$json")
+    python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("torch_profiler_dir") or "/root/.cache/vllm-profiles")' "$json"
+  else
+    printf '%s' /root/.cache/vllm-profiles
   fi
+}
+
+trace_dir_host() {
+  local inner cache
+  inner=$(trace_dir_container)
   cache=$(getenv CACHE_ROOT)
   cache=${cache:-/root/.cache}
   printf '%s' "${inner/#\/root\/.cache/$cache}"
@@ -112,17 +118,18 @@ cmd_profile() {
 
   local dir
   dir=$(trace_dir_host)
+  inner=$(trace_dir_container)
   sleep 5
-  echo "[perf] trace 目录: $dir"
-  if [[ -d "$dir" ]]; then
+  echo "[perf] trace 目录: $dir（容器内 $inner）"
+  if [[ -d "$dir" ]] || docker exec "$CONTAINER" test -d "$inner" 2>/dev/null; then
     du -sh "$dir" 2>/dev/null || true
-    ls -lt "$dir" | head -12
-    local newest
-    newest=$(find "$dir" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' 2>/dev/null | sort -n | tail -1 | cut -d' ' -f2-)
-    if [[ -n "${newest:-}" ]]; then
-      echo "[perf] 热点算子（本次 trace: $(basename "$newest")）"
-      python3 "$STACK_DIR/scripts/trace_top.py" "$newest" --top "${TOP:-20}" || true
-    fi
+    # torch_npu 的 trace 目录是 root 700，宿主机读不了：导出与统计都在容器里做
+    docker exec "$CONTAINER" chmod -R a+rX "$inner" 2>/dev/null || true
+    docker exec "$CONTAINER" ls -lt "$inner" 2>/dev/null | head -12 || ls -lt "$dir" | head -12
+    echo "[perf] 热点算子（最新 rank，msprof 导出约 20s）"
+    docker exec "$CONTAINER" python3 /opt/vllm/scripts/trace_top.py "$inner" \
+      --export --top "${TOP:-20}" \
+      || echo "[perf] 容器内分析失败，可稍后手动: docker exec $CONTAINER python3 /opt/vllm/scripts/trace_top.py $inner --export" >&2
   else
     echo "[perf] 未找到 trace 目录，检查 profiler.json 的 torch_profiler_dir 与 CACHE_ROOT 挂载" >&2
   fi
