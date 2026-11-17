@@ -181,6 +181,9 @@ VLLM_FETCH_PROXY=http://YOUR_PROXY:PORT
 - 镜像里的 vllm 是 **shallow clone**，脚本自动用 `--depth=1` 取目标分支，不会把整段历史拉进容器。
 - 分支的 `pyproject.toml` 版本号不会更新安装元数据（仍是 `0.33.0+empty`）；`vllm_version_is(...)` 之类的版本判断读的是包版本，必要时用 `importlib.metadata` 之外的证据确认实际 commit。
 - vllm 先于 vllm-ascend 切换，两者要相互匹配：vllm-ascend 的 `main` 同时看护 vLLM main 与 `v0.33.0` tag，换到别的上游基线时插件未覆盖的接口可能报错。
+- 容器内直连 GitHub 可能被拦（典型报错 `OpenSSL SSL_read: SSL_ERROR_SYSCALL`），此时必须配 `VLLM_FETCH_PROXY`（与 `VLLM_ASCEND_FETCH_PROXY` 可以用同一个代理）。
+- fetch 失败默认**静默回退**到镜像自带版本；验证分支时建议加 `VLLM_PIN_REQUIRED=1`（vllm-ascend 对应 `VLLM_ASCEND_PIN_REQUIRED=1`），拉不到就直接退出，避免"以为在跑分支、其实在跑镜像"。
+
 
 
 ### 参数命名约定

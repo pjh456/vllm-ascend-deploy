@@ -23,11 +23,12 @@ export MMC_META_CONFIG_PATH="${CONF_DIR}/mmc-meta.conf"
 export MMC_LOCAL_CONFIG_PATH="${CONF_DIR}/mmc-local.conf"
 
 # 把镜像内的 git 源码目录固定到指定 fork 分支（vllm / vllm-ascend 共用）。
-# 用法：pin_git_source <label> <dir> <repo> <branch> <proxy> [编译产物路径...]
+# 用法：pin_git_source <label> <dir> <repo> <branch> <proxy> <required:0|1> [编译产物路径...]
+# required=1 时 fetch 失败直接退出，避免静默跑回镜像自带版本。
 # 镜像内是 shallow clone 时按 --depth=1 取，避免把整段历史拉进容器。
 pin_git_source() {
-  local label="$1" dir="$2" repo="$3" branch="$4" proxy="$5"
-  shift 5
+  local label="$1" dir="$2" repo="$3" branch="$4" proxy="$5" required="$6"
+  shift 6
   [[ -d "$dir/.git" ]] || return 0
 
   local base_sha
@@ -50,6 +51,11 @@ pin_git_source() {
     sleep 3
   done
   if [[ "$ok" != "1" ]]; then
+    if [[ "$required" == "1" ]]; then
+      echo "[$label] ERROR: cannot fetch $branch from $repo (check $(tr 'a-z-' 'A-Z_' <<< "$label")_FETCH_PROXY / network);" \
+           "refusing to start on the image's bundled revision" >&2
+      exit 1
+    fi
     echo "[$label] WARN: fetch failed, keep $(git -C "$dir" rev-parse --short HEAD)"
     return 0
   fi
@@ -72,14 +78,15 @@ pin_git_source() {
 if [[ "${DRY_RUN:-0}" != "1" && -n "${VLLM_BRANCH:-}" ]]; then
   pin_git_source vllm "${VLLM_DIR:-/vllm-workspace/vllm}" \
     "${VLLM_REPO:?VLLM_REPO 未设置}" "$VLLM_BRANCH" "${VLLM_FETCH_PROXY:-}" \
-    csrc vllm/vllm_flash_attn
+    "${VLLM_PIN_REQUIRED:-0}" csrc vllm/vllm_flash_attn
 fi
 
 # 可选：把镜像内的 vllm-ascend 固定到指定 fork 分支（与旧部署脚本行为一致）
 # 不设置 VLLM_ASCEND_BRANCH 时直接使用镜像自带版本
 if [[ "${DRY_RUN:-0}" != "1" && -n "${VLLM_ASCEND_BRANCH:-}" ]]; then
   pin_git_source vllm-ascend "${VLLM_ASCEND_DIR:-/vllm-workspace/vllm-ascend}" \
-    "${VLLM_ASCEND_REPO:?VLLM_ASCEND_REPO 未设置}" "$VLLM_ASCEND_BRANCH" "${VLLM_ASCEND_FETCH_PROXY:-}"
+    "${VLLM_ASCEND_REPO:?VLLM_ASCEND_REPO 未设置}" "$VLLM_ASCEND_BRANCH" "${VLLM_ASCEND_FETCH_PROXY:-}" \
+    "${VLLM_ASCEND_PIN_REQUIRED:-0}"
 fi
 
 # DRY_RUN 只拼参数，跳过所有重量级初始化
