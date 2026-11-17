@@ -11,9 +11,9 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import itertools
 import json
 import random
-import statistics
 import time
 
 import requests
@@ -51,7 +51,7 @@ def count_tokens(base_url: str, model: str, text: str, timeout: float) -> int:
         )
         resp.raise_for_status()
         return int(resp.json()["count"])
-    except Exception:
+    except (requests.RequestException, ValueError, KeyError):
         # Rough fallback: 4 characters per token.
         return max(len(text) // 4, 1)
 
@@ -70,6 +70,7 @@ def one_request(base_url: str, model: str, prompt: str, output_len: int, timeout
     ttft = None
     stamps: list[float] = []
     prompt_tokens = 0
+    completion_tokens = 0
     with requests.post(
         f"{base_url}/v1/completions", json=payload, stream=True, timeout=timeout
     ) as resp:
@@ -87,6 +88,8 @@ def one_request(base_url: str, model: str, prompt: str, output_len: int, timeout
             usage = chunk.get("usage") or {}
             if usage.get("prompt_tokens"):
                 prompt_tokens = int(usage["prompt_tokens"])
+            if usage.get("completion_tokens"):
+                completion_tokens = int(usage["completion_tokens"])
             choices = chunk.get("choices") or []
             if not choices:
                 continue
@@ -100,12 +103,19 @@ def one_request(base_url: str, model: str, prompt: str, output_len: int, timeout
     end = time.perf_counter()
     if ttft is None:
         raise RuntimeError("no tokens streamed")
-    itls = [b - a for a, b in zip(stamps, stamps[1:])]
+    # A streamed chunk may carry several tokens (speculative decoding ships the
+    # whole accepted run at once), so chunk count is NOT the token count: trust
+    # the server's usage, and only fall back to chunks when it is missing.
+    output_tokens = completion_tokens or len(stamps)
+    itls = [b - a for a, b in itertools.pairwise(stamps)]
+    decode_s = (stamps[-1] - stamps[0]) if len(stamps) > 1 else 0.0
     return {
         "prompt_tokens": prompt_tokens,
-        "output_tokens": len(stamps),
+        "output_tokens": output_tokens,
+        "chunks": len(stamps),
         "ttft_ms": ttft * 1e3,
-        "tpot_ms": statistics.fmean(itls) * 1e3 if itls else float("nan"),
+        "tpot_ms": (decode_s * 1e3 / (output_tokens - 1)) if output_tokens > 1 else float("nan"),
+        "step_ms": (decode_s * 1e3 / max(len(itls), 1)) if itls else float("nan"),
         "itls_ms": [x * 1e3 for x in itls],
         "elapsed_s": end - start,
     }
@@ -158,8 +168,10 @@ def main() -> int:
 
     ttfts = [r["ttft_ms"] for r in results]
     tpots = [r["tpot_ms"] for r in results if r["tpot_ms"] == r["tpot_ms"]]
+    steps = [r["step_ms"] for r in results if r["step_ms"] == r["step_ms"]]
     itls = [x for r in results for x in r["itls_ms"]]
     out_tokens = sum(r["output_tokens"] for r in results)
+    chunks = sum(r["chunks"] for r in results)
     prompt_tokens = max(r["prompt_tokens"] for r in results)
     summary = {
         "requests": len(results),
@@ -174,9 +186,11 @@ def main() -> int:
         "ttft_ms_p90": round(pct(ttfts, 0.9), 2),
         "tpot_ms_p50": round(pct(tpots, 0.5), 2),
         "tpot_ms_p90": round(pct(tpots, 0.9), 2),
-        "itl_ms_p50": round(pct(itls, 0.5), 2),
-        "itl_ms_p90": round(pct(itls, 0.9), 2),
         "decode_tokens_per_s_per_seq": round(1e3 / pct(tpots, 0.5), 2) if tpots else None,
+        # Speculative decoding ships a whole accepted run per step, so one SSE
+        # chunk is one engine step, not one token.
+        "chunk_ms_p50": round(pct(itls, 0.5), 2),
+        "tokens_per_chunk": round(out_tokens / chunks, 2) if chunks else None,
     }
     print(json.dumps(summary, indent=2, ensure_ascii=False))
     if args.json_out:
