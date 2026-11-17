@@ -165,6 +165,24 @@ VLLM_ASCEND_FETCH_PROXY=http://YOUR_PROXY:PORT
 
 容器启动时会先 `git fetch` + `checkout` 再 `exec vllm`；不设置则直接使用镜像自带版本。镜像版本与分支不一致的典型症状是 DFlash2 / aclgraph 相关的 `Forward context is not set` 断言。
 
+#### 切换 vLLM 的 fork / 分支
+
+vLLM 自身也支持同样的切换，用于验证上游 PR 或本地补丁（镜像内 `/vllm-workspace/vllm` 是 **editable install**，`__editable__.vllm-0.33.0+empty.pth` 指向该目录，换源码立即生效，**不需要 pip 重装**）：
+
+```bash
+VLLM_REPO=https://github.com/YOUR_ACCOUNT/vllm.git
+VLLM_BRANCH=fix/YOUR_BRANCH
+VLLM_FETCH_PROXY=http://YOUR_PROXY:PORT
+```
+
+启动日志会打印 `[vllm] pinned to <branch> @ <sha> (image: <sha>)`。几个前提：
+
+- **只替换 Python 源码**。`csrc/`、`vllm/vllm_flash_attn/` 的编译产物是镜像按自带 commit 预编译的；分支改了这些目录时脚本会打 `WARN: branch differs from the image build ...`，此时必须重建镜像，否则 import 失败或 kernel 不匹配。
+- 镜像里的 vllm 是 **shallow clone**，脚本自动用 `--depth=1` 取目标分支，不会把整段历史拉进容器。
+- 分支的 `pyproject.toml` 版本号不会更新安装元数据（仍是 `0.33.0+empty`）；`vllm_version_is(...)` 之类的版本判断读的是包版本，必要时用 `importlib.metadata` 之外的证据确认实际 commit。
+- vllm 先于 vllm-ascend 切换，两者要相互匹配：vllm-ascend 的 `main` 同时看护 vLLM main 与 `v0.33.0` tag，换到别的上游基线时插件未覆盖的接口可能报错。
+
+
 ### 参数命名约定
 
 `engine/build_args.sh` 把环境变量自动转成 CLI 参数：
