@@ -349,9 +349,13 @@ make perf HOST=qwen38 ARGS="bench --input-len 1024 --output-len 128 --concurrenc
 make perf HOST=qwen38 ARGS="bench --input-len 1024 --output-len 128 --concurrency 8 --num-prompts 32"
 ```
 
-输出 `ttft_ms_p50/p90`、`tpot_ms_p50/p90`、`itl_ms_p50/p90`、`output_tokens_per_s`、
-`decode_tokens_per_s_per_seq`（单流每秒 token 数）。所有请求带 `ignore_eos`，
-输出长度固定，方便不同配置横比。
+输出 `ttft_ms_p50/p90`、`tpot_ms_p50/p90`（每个 token 的平均间隔）、`chunk_ms_p50`（每个
+SSE chunk 的间隔，也就是一个引擎 step 的耗时）、`tokens_per_chunk`（一步出来几个 token，
+等于投机解码的平均接受长度）、`output_tokens_per_s`、`decode_tokens_per_s_per_seq`。
+所有请求带 `ignore_eos`，输出长度固定，方便不同配置横比。
+
+注意 token 数取自服务端 `usage.completion_tokens` 而不是 chunk 数：开了投机解码后一个 chunk
+可能带好几个 token，按 chunk 数算会把吞吐低估 2~3 倍。
 
 ### 2. 再看图覆盖与每步耗时（需要在 `.env` 里加参数并重建一次）
 
