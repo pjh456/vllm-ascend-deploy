@@ -456,6 +456,44 @@ git ls-files | grep -x versions.env && echo "versions.env 被跟踪！"
 
 如果敏感信息已经进入过历史提交，仅删除文件不够，需要改写历史后再推送。
 
+## 性能基线（Qwen3.8-Flash-Next / 8×A2）
+
+记录一次实测基准，便于以后换镜像/改配置时判断“是不是变慢了”。测量条件：镜像
+`ascendai/vllm-ascend:v0.32.0rc1-openeuler`，vllm-ascend `deploy/vllm032-261112`，
+TP8 + EP8 + DP1，`max_model_len=262144`，`block-size=512`，`max_num_seqs=32`，
+`max_num_batched_tokens=8192`，`FULL_DECODE_ONLY` + `npugraph_ex`，MTP `num_speculative_tokens=3`，
+KV 池 `memcache`。所有数字都在 `perf.sh` 预热（逐档并发 prime）之后测得。
+
+解码（1024 prompt / 128 输出，`make perf ARGS=sweep`）：
+
+| 并发 | 总吞吐 | 单流 | TTFT p50 | TPOT p50 | 每步耗时 | 每步 token |
+|---|---|---|---|---|---|---|
+| 1 | 27 | 54.6 tok/s | 1.01 s | 18.3 ms | 52.7 ms | 2.63 |
+| 8 | 156 | 26.6 | 1.55 s | 37.7 ms | 59.9 ms | 2.72 |
+| 32 | 314 | 15.6 | 4.21 s | 64.1 ms | 87.2 ms | 2.76 |
+
+`max_num_seqs=32` 是并发上限；每步 token 即 MTP 的平均接受长度（草稿接受率 0.55~0.6）。
+
+TTFT / prefill（c=1）：固定开销约 0.8 s，之后约 **62k tok/s** 的 prefill 速率 ——
+
+| prompt | TTFT p50 |
+|---|---|
+| 1k | 1.01 s |
+| 8k | 0.88 s |
+| 32k | 1.28 s |
+
+所以长上下文（opencode 常见的 20k~100k）不会慢在 prefill，别指望调
+`max_num_batched_tokens` 改善体感。
+
+一步 53 ms 的构成（`profile` 抓 decode-only trace，100 step，rank0）：
+AI Core 算子 35 ms + HCCL 14 ms，设备忙 97%（不是空转）。其中 `MatMulV2` 每步 484 次、
+平均 16 µs；MoE 6.3 ms；索引搬运类（Slice/Cast/Index/IndexCheck）3.8 ms。
+
+`enable_flashcomm1`（SP MoE）on/off 实测在噪声内（c=1 on 快 14%、c=8 off 快 17%、
+c=32 on 快 8%）：关掉后每步慢 8~13%（SP 确实省每卡计算），但每步 token 多 6~14%
+（SP 的切分影响 MTP 接受长度），互相抵消。性能打平的情况下建议保持 `false`：上游
+`vllm/models/qwen4_exp/amd/model.py` 对 HC+SP 直接 `raise NotImplementedError`。
+
 ## 故障排查
 
 | 现象 | 排查方向 |
