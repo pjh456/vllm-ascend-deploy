@@ -3,6 +3,7 @@
 #
 #   scripts/perf.sh <host> bench   [bench.py 参数...]
 #   scripts/perf.sh <host> profile [--seconds N] [bench.py 参数...]
+#   scripts/perf.sh <host> sweep   [--concurrency-list 1,8,32] [bench.py 参数...]
 #   scripts/perf.sh <host> collect [--out DIR]
 #   scripts/perf.sh <host> logstats
 #
@@ -72,7 +73,6 @@ api_get()  { curl -fsS -m 30 "$URL$1"; }
 api_post() { curl -fsS -m 600 -X POST "$URL$1"; }
 
 run_bench() {
-  local default_args=(--input-len 1024 --output-len 128 --num-prompts 8 --concurrency 1)
   python3 "$STACK_DIR/scripts/bench.py" --url "$URL" --model "$MODEL_NAME" \
     ${BENCH_ARGS+"${BENCH_ARGS[@]}"}
 }
@@ -82,6 +82,57 @@ cmd_bench() {
   [[ ${#BENCH_ARGS[@]} -gt 0 ]] || BENCH_ARGS=(--input-len 1024 --output-len 128 --num-prompts 8 --concurrency 1)
   api_get /health >/dev/null || { echo "服务未就绪: $URL/health" >&2; exit 1; }
   run_bench
+}
+
+# 扫一组并发，输出一行一档的对比表（换配置后直接横向比）
+cmd_sweep() {
+  local concs="1,8,32" extra=() work
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --concurrency-list) concs=$2; shift 2 ;;
+      *) extra+=("$1"); shift ;;
+    esac
+  done
+  api_get /health >/dev/null || { echo "服务未就绪: $URL/health" >&2; exit 1; }
+  work=$(mktemp -d)
+  local c
+  IFS=',' read -ra list <<< "$concs"
+  for c in "${list[@]}"; do
+    echo "[perf] concurrency=$c" >&2
+    python3 "$STACK_DIR/scripts/bench.py" --url "$URL" --model "$MODEL_NAME" \
+      --concurrency "$c" --num-prompts $((c * 2)) --input-len 1024 --output-len 128 \
+      ${extra+"${extra[@]}"} --json-out "$work/$c.json" >/dev/null || echo "{}" > "$work/$c.json"
+  done
+  python3 - "$work" "$concs" <<'PY'
+import json, os, sys
+work, concs = sys.argv[1], sys.argv[2].split(",")
+cols = ["conc", "total_tok/s", "per_stream", "ttft_p50_ms", "tpot_p50_ms", "chunk_ms", "tok/chunk"]
+rows = []
+for c in concs:
+    path = os.path.join(work, c + ".json")
+    try:
+        d = json.load(open(path))
+    except Exception:
+        rows.append([c] + ["-"] * (len(cols) - 1))
+        continue
+    rows.append([
+        c,
+        f"{d.get('output_tokens_per_s', 0):.1f}",
+        f"{d.get('decode_tokens_per_s_per_seq') or 0:.1f}",
+        f"{d.get('ttft_ms_p50', 0):.0f}",
+        f"{d.get('tpot_ms_p50', 0):.1f}",
+        f"{d.get('chunk_ms_p50', 0):.1f}",
+        f"{d.get('tokens_per_chunk') or 0:.2f}",
+    ])
+widths = [max(len(str(r[i])) for r in ([cols] + rows)) for i in range(len(cols))]
+def fmt(row):
+    return "  ".join(str(v).rjust(w) if i else str(v).ljust(w) for i, (v, w) in enumerate(zip(row, widths)))
+print(fmt(cols))
+print("  ".join("-" * w for w in widths))
+for r in rows:
+    print(fmt(r))
+PY
+  rm -rf "$work"
 }
 
 cmd_profile() {
@@ -192,6 +243,7 @@ cmd_logstats() {
 
 case "$CMD" in
   bench)     cmd_bench "$@" ;;
+  sweep)     cmd_sweep "$@" ;;
   profile)   cmd_profile "$@" ;;
   collect)   cmd_collect "$@" ;;
   logstats)  cmd_logstats "$@" ;;
