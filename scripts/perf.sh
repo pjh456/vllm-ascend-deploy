@@ -124,6 +124,16 @@ cmd_sweep() {
   work=$(mktemp -d)
   local c
   IFS=',' read -ra list <<< "$concs"
+  # 每一档并发都要单独热身：JIT 和图缓存是按 batch/形状触发的，只用 batch=1
+  # 热身过，第一次上 8 并发照样会现场编译，把 TTFT 和吞吐算歪。
+  if [[ "${SWEEP_NO_PRIME:-0}" != "1" ]]; then
+    for c in "${list[@]}"; do
+      echo "[perf] prime concurrency=$c" >&2
+      python3 "$STACK_DIR/scripts/bench.py" --url "$URL" --model "$MODEL_NAME" \
+        --concurrency "$c" --num-prompts "$c" --input-len 1024 --output-len 16 \
+        --prompt-tag "prime-${RANDOM}" >/dev/null || true
+    done
+  fi
   for c in "${list[@]}"; do
     echo "[perf] concurrency=$c" >&2
     python3 "$STACK_DIR/scripts/bench.py" --url "$URL" --model "$MODEL_NAME" \
