@@ -24,9 +24,11 @@ SAMPLE_TEXT = (
 )
 
 
-def build_prompt(base_url: str, model: str, target_tokens: int, timeout: float) -> str:
+def build_prompt(
+    base_url: str, model: str, target_tokens: int, timeout: float, tag: str = ""
+) -> str:
     """Grow a synthetic prompt until the server tokenizer reports the target size."""
-    text = SAMPLE_TEXT
+    text = f"{tag} {SAMPLE_TEXT}" if tag else SAMPLE_TEXT
     for _ in range(64):
         n = count_tokens(base_url, model, text, timeout)
         if n >= target_tokens:
@@ -139,12 +141,23 @@ def main() -> int:
     parser.add_argument("--output-len", type=int, default=128)
     parser.add_argument("--timeout", type=float, default=3600.0)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--prompt-tag",
+        default="",
+        help="prefix the synthetic prompt with this text, so a warmup run does not "
+        "prime the prefix cache that the measured run would otherwise hit",
+    )
     parser.add_argument("--json-out", default="")
+    parser.add_argument(
+        "--summary-line",
+        action="store_true",
+        help="print one human-readable line instead of JSON (handy for warmup)",
+    )
     args = parser.parse_args()
 
     random.seed(args.seed)
     base_url = args.url.rstrip("/")
-    prompt = build_prompt(base_url, args.model, args.input_len, args.timeout)
+    prompt = build_prompt(base_url, args.model, args.input_len, args.timeout, args.prompt_tag)
 
     results, errors = [], []
     wall = time.perf_counter()
@@ -191,7 +204,15 @@ def main() -> int:
         "chunk_ms_p50": round(pct(itls, 0.5), 2),
         "tokens_per_chunk": round(out_tokens / chunks, 2) if chunks else None,
     }
-    print(json.dumps(summary, indent=2, ensure_ascii=False))
+    if args.summary_line:
+        print(
+            f"input={summary['prompt_tokens']} ttft={summary['ttft_ms_p50']:.0f}ms "
+            f"tpot={summary['tpot_ms_p50']:.1f}ms "
+            f"chunk={summary['chunk_ms_p50']:.1f}ms "
+            f"tok/s={summary['decode_tokens_per_s_per_seq']}"
+        )
+    else:
+        print(json.dumps(summary, indent=2, ensure_ascii=False))
     if args.json_out:
         with open(args.json_out, "w", encoding="utf-8") as handle:
             json.dump(summary, handle, indent=2, ensure_ascii=False)

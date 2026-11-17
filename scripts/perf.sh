@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # 性能诊断入口：取数（bench）、按需抓 trace（profile）、现场取证（collect）。
 #
-#   scripts/perf.sh <host> bench   [bench.py 参数...]
+#   scripts/perf.sh <host> warmup   [WARMUP_LENS=8192,1024] [WARMUP_OUTPUT=16]
+#   scripts/perf.sh <host> bench   [bench.py 参数...]（默认先 warmup）
 #   scripts/perf.sh <host> profile [--seconds N] [bench.py 参数...]
 #   scripts/perf.sh <host> sweep   [--concurrency-list 1,8,32] [bench.py 参数...]
 #   scripts/perf.sh <host> collect [--out DIR]
@@ -77,10 +78,35 @@ run_bench() {
     ${BENCH_ARGS+"${BENCH_ARGS[@]}"}
 }
 
+# /health 通过 != kernels 都 JIT 完了：首次请求（尤其大 prefill）可能要 1~2 分钟。
+# 这里先打两条不同长度的请求把 JIT/图都过一遍，并让内容与正式压测不同（避免命中前缀缓存）。
+warmup_once() {
+  local len="$1"
+  BENCH_ARGS=(--input-len "$len" --output-len "${WARMUP_OUTPUT:-16}" --num-prompts 1
+    --concurrency 1 --prompt-tag "warmup-${RANDOM}" --summary-line)
+  echo "[perf]   $(run_bench)"
+}
+
+cmd_warmup() {
+  api_get /health >/dev/null || { echo "服务未就绪: $URL/health" >&2; exit 1; }
+  local lens="${WARMUP_LENS:-8192,1024}" len
+  local IFS=,
+  for len in $lens; do
+    echo "[perf] warmup input-len=$len（首次会慢，正常）" >&2
+    warmup_once "$len"
+  done
+}
+
+maybe_warmup() {
+  [[ "${NO_WARMUP:-0}" == "1" ]] && { echo "[perf] 跳过 warmup（NO_WARMUP=1）" >&2; return 0; }
+  cmd_warmup
+}
+
 cmd_bench() {
   BENCH_ARGS=("$@")
   [[ ${#BENCH_ARGS[@]} -gt 0 ]] || BENCH_ARGS=(--input-len 1024 --output-len 128 --num-prompts 8 --concurrency 1)
   api_get /health >/dev/null || { echo "服务未就绪: $URL/health" >&2; exit 1; }
+  maybe_warmup
   run_bench
 }
 
@@ -94,6 +120,7 @@ cmd_sweep() {
     esac
   done
   api_get /health >/dev/null || { echo "服务未就绪: $URL/health" >&2; exit 1; }
+  maybe_warmup
   work=$(mktemp -d)
   local c
   IFS=',' read -ra list <<< "$concs"
@@ -145,6 +172,7 @@ cmd_profile() {
   done
   api_get /health >/dev/null || { echo "服务未就绪: $URL/health" >&2; exit 1; }
 
+  maybe_warmup
   echo "[perf] start_profile"
   api_post /start_profile || {
     echo "start_profile 失败：服务端需要用 --profiler-config 启动（S_PROFILER_CONFIG）" >&2
@@ -245,6 +273,7 @@ case "$CMD" in
   bench)     cmd_bench "$@" ;;
   sweep)     cmd_sweep "$@" ;;
   profile)   cmd_profile "$@" ;;
+  warmup)    cmd_warmup "$@" ;;
   collect)   cmd_collect "$@" ;;
   logstats)  cmd_logstats "$@" ;;
   *) echo "未知子命令: $CMD" >&2; exit 1 ;;

@@ -349,6 +349,11 @@ make perf HOST=qwen38 ARGS="bench --input-len 1024 --output-len 128 --concurrenc
 make perf HOST=qwen38 ARGS="bench --input-len 1024 --output-len 128 --concurrency 8 --num-prompts 32"
 ```
 
+> **`/health` 通过 ≠ 预热完成**：引擎刚起来时第一次请求要现场 JIT/建图，长 prompt 会出现
+> 1~2 分钟的 TTFT。`bench` / `sweep` / `profile` 现在默认先跑 warmup（8192 和 1024 两种输入长度，
+> 内容带随机 tag 以免命中正式压测的前缀缓存），用 `WARMUP_LENS=4096,1024` 调整，
+> `NO_WARMUP=1` 跳过。也可以单独跑：`make perf HOST=qwen38 ARGS=warmup`。
+
 输出 `ttft_ms_p50/p90`、`tpot_ms_p50/p90`（每个 token 的平均间隔）、`chunk_ms_p50`（每个
 SSE chunk 的间隔，也就是一个引擎 step 的耗时）、`tokens_per_chunk`（一步出来几个 token，
 等于投机解码的平均接受长度）、`output_tokens_per_s`、`decode_tokens_per_s_per_seq`。
@@ -464,6 +469,8 @@ git ls-files | grep -x versions.env && echo "versions.env 被跟踪！"
 | decode 的池命中率始终为 0 | 确认 `mmc-shm` 同时挂载到 P/D，且 `kv-meta` 只有一份 |
 | `docker compose config` 报项目名非法 | 主机名含点号时用 Makefile 的封装，不要手敲 `-p` |
 | 长 prompt 并发上不去 | 看 decode 的 `vllm:kv_cache_usage_perc` 与 `request_queue_time_seconds` |
+| 引擎日志刷 `Trying to connect to 127.0.0.1:6000 ... errno:111` / `[RECOVER] attempt N/5` | KV 池的 MemCache config store 没在跑：多半是 `down` 之后只用 `up-service --no-deps` 重建了引擎，`kv-meta` 没回来。用 `make up HOST=...` 把整个栈拉起 |
+| 第一次请求 TTFT 1~2 分钟，之后就正常 | 引擎的 JIT/建图还没热身，先打一条长请求预热（`make perf HOST=... ARGS=warmup`） |
 
 ## 已知限制
 
