@@ -71,6 +71,7 @@ def export_rank(rank: str) -> str | None:
         ["msprof", "--export=on", f"--output={prof}"],
         cwd=rank,
         capture_output=True,
+        check=False,
         text=True,
     )
     if done.returncode != 0:

@@ -168,7 +168,6 @@ def main() -> int:
 
     ttfts = [r["ttft_ms"] for r in results]
     tpots = [r["tpot_ms"] for r in results if r["tpot_ms"] == r["tpot_ms"]]
-    steps = [r["step_ms"] for r in results if r["step_ms"] == r["step_ms"]]
     itls = [x for r in results for x in r["itls_ms"]]
     out_tokens = sum(r["output_tokens"] for r in results)
     chunks = sum(r["chunks"] for r in results)
