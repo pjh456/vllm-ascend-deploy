@@ -378,6 +378,8 @@ make perf HOST=qwen38 ARGS="profile --input-len 256 --output-len 32 --concurrenc
 `profile` 会 `POST /start_profile` → 跑一小段固定负载 → `POST /stop_profile`，trace 落到
 `torch_profiler_dir`（默认 `/root/.cache/vllm-profiles`，宿主机是 `${CACHE_ROOT}/vllm-profiles`），
 每个 rank 一个目录，含 CPU + NPU 活动与 aclnn 算子名/耗时（也能看到 HCCL 通信算子）。
+脚本随后用 `scripts/trace_top.py` 把本次 trace 的 top-N 算子按总耗时排序，并单独汇总集合通信占比；
+想看别的 rank 就手动跑 `python3 scripts/trace_top.py <trace 目录> --top 30`。
 
 要点：
 

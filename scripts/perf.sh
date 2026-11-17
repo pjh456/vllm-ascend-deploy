@@ -117,6 +117,12 @@ cmd_profile() {
   if [[ -d "$dir" ]]; then
     du -sh "$dir" 2>/dev/null || true
     ls -lt "$dir" | head -12
+    local newest
+    newest=$(find "$dir" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' 2>/dev/null | sort -n | tail -1 | cut -d' ' -f2-)
+    if [[ -n "${newest:-}" ]]; then
+      echo "[perf] 热点算子（本次 trace: $(basename "$newest")）"
+      python3 "$STACK_DIR/scripts/trace_top.py" "$newest" --top "${TOP:-20}" || true
+    fi
   else
     echo "[perf] 未找到 trace 目录，检查 profiler.json 的 torch_profiler_dir 与 CACHE_ROOT 挂载" >&2
   fi
