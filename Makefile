@@ -17,7 +17,7 @@ COMPOSE := STACK_DIR=$(STACK_DIR) docker compose -p $(PROJECT) --profile $(MODE)
              --env-file hosts/$(HOST)/.env \
              -f compose.yaml -f hosts/$(HOST)/host.yaml
 
-.PHONY: guard init check up down logs ps install-unit args up-service restart-service router
+.PHONY: guard init check up down logs ps install-unit args up-service restart-service router perf
 
 guard:
 	@test -n "$(HOST)" || { echo "缺少 HOST，例如: make up HOST=1.2"; exit 1; }
@@ -54,6 +54,11 @@ up-service: check
 restart-service: guard
 	@test -n "$(SERVICE)" || { echo "缺少 SERVICE"; exit 1; }
 	@$(COMPOSE) restart $(SERVICE)
+
+# 性能诊断：ARGS="bench|profile|collect|logstats ..."（见 README「性能诊断」）
+ARGS ?=
+perf: guard
+	@scripts/perf.sh $(HOST) $(ARGS)
 
 # router 常用快捷方式
 router: guard

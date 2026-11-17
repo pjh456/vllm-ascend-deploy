@@ -330,9 +330,71 @@ VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS=3000
 | `make down HOST=node1` | 停止并移除容器 |
 | `make logs HOST=node1` | 跟踪日志 |
 | `make ps HOST=node1` | 查看状态 |
+| `make perf HOST=node1 ARGS="bench\|profile\|collect\|logstats ..."` | 性能诊断：取数 / 抓 trace / 现场取证（见下节） |
 | `make install-unit` | 渲染并安装 systemd 单元（需要 sudo） |
 
 `HOST` 可以包含点号（例如 `1.2`），Makefile 会自动把项目名转成合法形式（`vllm-1-2`）。
+
+## 性能诊断
+
+“decode 慢”要拆成三件事来看：**每秒出多少 token**、**每一步花在哪**、**图有没有真的命中**。
+`make perf` 是这三个问题的最短路径（依赖宿主机 `python3` + `requests`，不需要在容器里装东西）。
+
+### 1. 先取数字（不改启动参数）
+
+```bash
+# 单流解码速度：TTFT / TPOT / ITL
+make perf HOST=qwen38 ARGS="bench --input-len 1024 --output-len 128 --concurrency 1 --num-prompts 8"
+# 总吞吐：并发放大
+make perf HOST=qwen38 ARGS="bench --input-len 1024 --output-len 128 --concurrency 8 --num-prompts 32"
+```
+
+输出 `ttft_ms_p50/p90`、`tpot_ms_p50/p90`、`itl_ms_p50/p90`、`output_tokens_per_s`、
+`decode_tokens_per_s_per_seq`（单流每秒 token 数）。所有请求带 `ignore_eos`，
+输出长度固定，方便不同配置横比。
+
+### 2. 再看图覆盖与每步耗时（需要在 `.env` 里加参数并重建一次）
+
+| `.env` | 参数 | 作用 |
+|---|---|---|
+| `COMMON_CUDAGRAPH_METRICS=true` | `--cudagraph-metrics` | 每个日志周期报告解码实际命中的 cudagraph 档位；没命中就是退回 eager/piecewise，速度会掉一个量级 |
+| `COMMON_PER_REQUEST_SPEC_DECODE_METRICS=summary` | `--per-request-spec-decode-metrics summary` | 每请求的投机接受情况（MTP 草稿是不是白跑） |
+| `COMMON_ENABLE_LOGGING_ITERATION_DETAILS=true` | `--enable-logging-iteration-details` | 每步的 ctx/gen 请求数、token 数与 `elapsed_ms`：区分“引擎空转”和“模型慢” |
+
+服务端每 10s 的 stats 行本身也带 `Speculative metrics: Draft acceptance rate` 和
+`Running/Waiting`；`make perf HOST=qwen38 ARGS=logstats` 可以实时盯这几行。
+
+### 3. 逐算子 trace（torch_npu profiler，按需开启、平时零开销）
+
+```bash
+cp hosts/profiler.json.example hosts/qwen38/profiler.json
+# hosts/qwen38/.env
+S_PROFILER_CONFIG=@/opt/vllm/hosts/qwen38/profiler.json
+make up-service HOST=qwen38 SERVICE=single     # --profiler-config 只能靠重建生效
+
+make perf HOST=qwen38 ARGS="profile --input-len 256 --output-len 32 --concurrency 1 --num-prompts 4"
+```
+
+`profile` 会 `POST /start_profile` → 跑一小段固定负载 → `POST /stop_profile`，trace 落到
+`torch_profiler_dir`（默认 `/root/.cache/vllm-profiles`，宿主机是 `${CACHE_ROOT}/vllm-profiles`），
+每个 rank 一个目录，含 CPU + NPU 活动与 aclnn 算子名/耗时（也能看到 HCCL 通信算子）。
+
+要点：
+
+- `--profiler-config` 只是“装上 profiler”，**不开 `/start_profile` 就没有开销**，可以常驻
+- trace 期间时序失真，只用来找热点，不要用这段时间的吞吐报数
+- 与 `additional_config.msmonitor_use_daemon` 互斥
+- `torch_profiler_with_stack` 在 Ascend 上开销很大，`profiler.json.example` 里已经关掉
+
+### 4. 现场取证
+
+```bash
+make perf HOST=qwen38 ARGS=collect      # 落到 perf-reports/<ts>/
+```
+
+抓启动参数/环境变量、vllm 与 vllm-ascend 的 commit、`/metrics` 关键指标、warning 汇总、
+stats 尾部、`npu-smi` 利用率，用来判断“是卡在通信/图没命中/主机侧同步还是算子慢”。
+另外启动日志里的 `Available KV cache memory: X GiB` 决定并发上限，和单步延迟是两件事，一起记录。
 
 ## 启动与关闭语义
 

@@ -18,3 +18,6 @@ __pycache__/
 
 # 临时/日志
 *.log
+
+# 性能诊断产物
+perf-reports/
