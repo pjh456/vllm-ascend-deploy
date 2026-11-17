@@ -140,7 +140,7 @@ cmd_collect() {
     docker exec "$CONTAINER" bash -lc 'git -C /vllm-workspace/vllm-ascend log --oneline -1; git -C /vllm-workspace/vllm log --oneline -1' 2>/dev/null || true
   } > "$out/summary.txt"
 
-  docker inspect "$CONTAINER" --format '{{range .Config.Cmd}}{{println .}}{{end}}' \
+  docker inspect "$CONTAINER" --format '{{json .Path}} {{json .Args}}' \
     > "$out/cmd.txt" 2>/dev/null || true
   docker inspect "$CONTAINER" --format '{{range .Config.Env}}{{println .}}{{end}}' \
     | sort > "$out/env.txt" 2>/dev/null || true
@@ -154,9 +154,12 @@ cmd_collect() {
   fi
 
   docker logs --tail 3000 "$CONTAINER" > "$out/vllm.log" 2>&1 || true
-  grep -E 'Avg (prompt|generation) throughput|Speculative metrics|Running:|Waiting:|KV cache usage|cudagraph|npugraph|Graph|iteration' \
-    "$out/vllm.log" | tail -200 > "$out/stats-tail.txt" || true
-  grep -iE 'warn|fallback|not support|disable' "$out/vllm.log" | sort -u | tail -80 \
+  # 只看引擎自己的 stats 行；ERROR/traceback 单独收，避免混进“统计”
+  grep -E 'Avg (prompt|generation) throughput|Speculative metrics|Running:|Waiting:|KV cache usage|[Cc]udagraph (dispatch|mode)|iteration' \
+    "$out/vllm.log" | grep -vE 'ERROR|Traceback|File "' | tail -200 > "$out/stats-tail.txt" || true
+  grep -E 'ERROR|Traceback' "$out/vllm.log" | tail -100 > "$out/errors.txt" || true
+  grep -iE 'warn|fallback|not support|disable|deprecat' "$out/vllm.log" \
+    | grep -vE 'MMC|AccLink|mmc_local|backend_id|mooncake' | sort -u | tail -80 \
     > "$out/warnings.txt" || true
 
   npu-smi info > "$out/npu-smi.txt" 2>&1 || true
