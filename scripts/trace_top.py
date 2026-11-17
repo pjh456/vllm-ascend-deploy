@@ -50,17 +50,17 @@ def find_csvs(root: str) -> list[str]:
     return found
 
 
-def export_newest(root: str) -> str | None:
-    """Export the newest rank's raw PROF data and return the CSV directory."""
+def newest_rank(root: str) -> str | None:
     ranks = sorted(
         glob.glob(os.path.join(root, "*_ascend_pt")),
         key=os.path.getmtime,
         reverse=True,
     )
-    if not ranks:
-        print(f"{root}: 没有找到 *_ascend_pt 目录", file=sys.stderr)
-        return None
-    rank = ranks[0]
+    return ranks[0] if ranks else None
+
+
+def export_rank(rank: str) -> str | None:
+    """Export one rank's raw PROF data and return the CSV directory."""
     profs = sorted(glob.glob(os.path.join(rank, "PROF_*")), key=os.path.getmtime, reverse=True)
     if not profs:
         print(f"{rank}: 没有找到 PROF_* 目录", file=sys.stderr)
@@ -155,10 +155,16 @@ def main() -> int:
         return 1
 
     csvs = find_csvs(args.trace_dir)
-    if not csvs and args.export:
-        exported = export_newest(args.trace_dir)
-        if exported:
-            csvs = find_csvs(exported)
+    rank = newest_rank(args.trace_dir)
+    if rank:
+        # Only ever look at the newest rank: stale exports of earlier runs live
+        # side by side and would otherwise win the "first CSV found" race.
+        print(f"[trace] rank: {os.path.basename(rank)}")
+        csvs = find_csvs(rank)
+        if not csvs and args.export:
+            exported = export_rank(rank)
+            if exported:
+                csvs = find_csvs(exported)
     if not csvs:
         print(f"{args.trace_dir} 下没有 op_statistic*.csv / kernel_details*.csv", file=sys.stderr)
         print("提示：加 --export 让 msprof 先导出；导出要在容器里跑（需要 CANN 环境）", file=sys.stderr)
